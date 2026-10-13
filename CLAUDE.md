@@ -62,3 +62,7 @@ npm run cap:sync             # 构建并同步到 android/
 | 端到端测试里 `text=加入`、`text=删除` 会先匹配到标题 | 用 `.actions .solid-btn`、`.dlg .btns >> text=删除` 这类限定在按钮区的选择器 |
 | 指纹框是系统界面 | 在浏览器和端到端测试里不可用；`window.__vaultKeyMock` 可以放假的实现 |
 | 云端环境没有安卓 SDK，也连不上 Google Maven | 原生代码用 `e2e/native/stubs/` 的桩类编译检查，最终看 CI |
+| 自动填充窗口（AutofillActivity）和主界面是两个独立的 WebView，内存各是各的 | 本地写入前先合并磁盘上的（`persistVault`），SlotStore 不缓存序号；主界面回到前台时合并磁盘。不要在内存里“以我为准”整个覆盖 |
+| 自动填充的密码不能经过系统进程 | 保存请求的账号密码放在 `PendingSaves`（进程内存），Intent 里只放令牌；填充结果只通过 Dataset 交给系统 |
+| 自动填充窗口要能把结果交回系统 | 它不能是 singleTask（主界面是），独立任务 `taskAffinity=""`；填充的 PendingIntent 在安卓 12 起要 `FLAG_MUTABLE`（系统要往里放页面结构） |
+| 原生插件在 `window.__autofillMock` / `__vaultKeyMock` 有假实现 | 端到端测试用它们模拟自动填充窗口和指纹 |

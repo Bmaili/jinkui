@@ -28,6 +28,8 @@ export interface ItemContent {
   fields?: CustomField[]
   /** 所在目录的 ID（规格 4.5）；没有、或指向已删除的目录时是“未分类” */
   folder?: string
+  /** 自动填充记住的安卓 app 包名（1.0.3 起，规格 5.8），例如 com.taobao.taobao */
+  apps?: string[]
   /** 1.0.1 的标签，1.0.2 起界面上不再显示，数据原样保留 */
   tags?: string[]
   favorite?: boolean

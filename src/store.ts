@@ -16,7 +16,7 @@ import {
   KEY_INFO, VaultCipher, WrongPassphraseError, changePassphrase as rewrap, createKeys, parseKeyInfo, unwrapIdentity, type KeyBundle,
 } from './core/crypto'
 import { identityToRecipient } from 'age-encryption'
-import type { ItemContent } from './core/item'
+import { canonicalJson, type ItemContent } from './core/item'
 import { GitHubStore, type GitHubConfig } from './core/sync/github'
 import { OssStore, type OssConfig } from './core/sync/oss'
 import { RemoteError, type RemoteStore } from './core/sync/remote'
@@ -110,8 +110,30 @@ interface LocalVaultFile {
   dirty?: boolean
 }
 
+/**
+ * 本机磁盘上的保险库合并进内存（规格 6.4）。自动填充窗口和主界面是两个独立的网页环境，
+ * 一边保存的条目，另一边内存里没有；合并是幂等的，多合并几次没有坏处。
+ */
+async function mergeFromDisk(): Promise<boolean> {
+  if (!cipher) return false
+  let disk: LocalVaultFile | null = null
+  try {
+    disk = await readEncrypted<LocalVaultFile>('vault')
+  } catch {
+    return false
+  }
+  if (!disk || disk.format > FORMAT) return false
+  const merged = gcTombstones(mergeVaults(vault.value, parseVault(disk.vault).state))
+  if (canonicalJson(merged) === canonicalJson(vault.value)) return false
+  vault.value = merged
+  if (disk.dirty && app.backend) app.sync.pending = true
+  return true
+}
+
 async function persistVault(): Promise<void> {
   if (!cipher) return
+  // 先合并磁盘上的：另一个窗口可能刚写过，直接覆盖会丢掉它的修改
+  await mergeFromDisk()
   const file: LocalVaultFile = { format: FORMAT, vault: vault.value, dirty: app.sync.pending }
   await writeEncrypted('vault', file)
 }
@@ -122,13 +144,17 @@ async function persistConfig(): Promise<void> {
 
 // ---------- 启动、解锁、上锁 ----------
 
-export async function init(): Promise<void> {
+/**
+ * 启动。mode 为 'autofill' 时是自动填充窗口（AutofillActivity）：不装前后台的自动上锁逻辑，
+ * 窗口用完就关，每次打开都要重新解锁。
+ */
+export async function init(mode: 'main' | 'autofill' = 'main'): Promise<void> {
   await loadPrefs()
   app.bio = await bioStatus()
   const id = await files.read('identity')
   app.phase = id && prefs.recipient ? 'locked' : 'setup'
   watch(() => prefs.blockScreenshots, (on) => void setScreenshotBlocking(on), { immediate: true })
-  installLifecycle()
+  if (mode === 'main') installLifecycle()
 }
 
 async function openWith(k: KeyBundle): Promise<void> {
@@ -332,6 +358,49 @@ export async function renameFolderById(id: string, name: string): Promise<void> 
 
 export async function removeFolder(id: string): Promise<void> {
   await commit(deleteFolder(vault.value, id, ctx()))
+}
+
+// ---------- 自动填充（规格 5.8） ----------
+
+/** 记住：以后在这个 app 里优先推荐这一条 */
+export async function rememberApp(id: string, pkg: string): Promise<void> {
+  const it = vault.value.items[id]
+  if (!it || !pkg) return
+  const apps = Array.isArray(it.apps) ? (it.apps as string[]) : []
+  if (apps.includes(pkg)) return
+  await saveItem(id, { apps: [...apps, pkg] })
+}
+
+export async function forgetApp(id: string, pkg: string): Promise<void> {
+  const it = vault.value.items[id]
+  if (!it || !Array.isArray(it.apps)) return
+  const apps = (it.apps as string[]).filter((p) => p !== pkg)
+  await saveItem(id, { apps: apps.length ? apps : undefined })
+}
+
+/** 登录后保存：更新已有条目的账号密码，或新建一条 */
+export async function saveCredential(c: { updateId?: string; title: string; username?: string; password: string; url?: string; app?: string }): Promise<string> {
+  if (c.updateId && vault.value.items[c.updateId]) {
+    const patch: Partial<ItemContent> = { password: c.password }
+    if (c.username) patch.username = c.username
+    await saveItem(c.updateId, patch)
+    if (c.app) await rememberApp(c.updateId, c.app)
+    return c.updateId
+  }
+  return addItem({
+    type: 'login',
+    title: c.title.trim() || '未命名',
+    ...(c.username ? { username: c.username } : {}),
+    password: c.password,
+    ...(c.url ? { urls: [c.url] } : {}),
+    ...(c.app ? { apps: [c.app] } : {}),
+  })
+}
+
+/** 自动填充窗口关掉前尽量把修改传上去，最多等 ms 毫秒；没传完的下次打开金匮时会补传 */
+export async function syncBeforeClose(ms = 5000): Promise<void> {
+  if (!app.backend || !app.sync.pending) return
+  await Promise.race([syncNow(), new Promise((r) => setTimeout(r, ms))])
 }
 
 export async function copySecret(text: string, label = '密码'): Promise<void> {
@@ -614,7 +683,8 @@ function onShow() {
     return
   }
   hiddenAt = 0
-  requestSync(0)
+  // 离开期间自动填充窗口可能保存过条目
+  void mergeFromDisk().then(() => requestSync(0))
 }
 
 let lifecycle = false

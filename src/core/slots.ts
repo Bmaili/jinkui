@@ -35,7 +35,7 @@ async function unpack(b: Uint8Array | null): Promise<{ seq: number; payload: Uin
 }
 
 export class SlotStore {
-  /** 每个文件当前最新槽位的序号，避免每次写都先读 */
+  /** 每个文件最近一次读到的最新序号 */
   private seqs = new Map<string, number>()
   private queue: Promise<unknown> = Promise.resolve()
 
@@ -56,7 +56,9 @@ export class SlotStore {
   /** 写入；同一个 SlotStore 的写入按顺序执行 */
   write(name: string, payload: Uint8Array): Promise<void> {
     const job = this.queue.catch(() => {}).then(async () => {
-      if (!this.seqs.has(name)) await this.latest(name)
+      // 每次写之前重新读：自动填充窗口和主界面是两个独立的网页环境，可能都写过这个文件，
+      // 用缓存的序号会把对方刚写的那个槽位覆盖掉
+      await this.latest(name)
       const seq = this.seqs.get(name)! + 1
       await this.raw.write(`${name}.${seq % 2}`, await pack(seq, payload))
       this.seqs.set(name, seq)

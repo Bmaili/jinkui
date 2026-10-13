@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PrivacyScreenPlugin.class);
         registerPlugin(SecureClipboardPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
+        registerPlugin(AutofillPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

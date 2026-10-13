@@ -20,12 +20,24 @@ const counts = computed(() => {
 const name = ref('')
 const error = ref('')
 
+const adding = ref(false)
+
 async function add() {
+  if (adding.value) return
   error.value = checkFolderName(name.value, vault.value.folders) ?? ''
   if (error.value) return
-  const id = await addFolder(name.value)
+  // 先取走名字、清空输入框：保存要一点时间，期间用户可能已经在输下一个
+  const n = name.value
   name.value = ''
-  emit('created', id)
+  adding.value = true
+  try {
+    emit('created', await addFolder(n))
+  } catch (e) {
+    name.value = n
+    error.value = (e as Error).message
+  } finally {
+    adding.value = false
+  }
 }
 
 async function rename(id: string, old: string) {
@@ -61,7 +73,7 @@ async function del(id: string, n: string) {
     </div>
     <form class="add" @submit.prevent="add">
       <input v-model="name" class="field" placeholder="新目录的名字，例如 银行" aria-label="新目录的名字" maxlength="20" @input="error = ''" />
-      <button class="solid-btn" type="submit" :disabled="!name.trim()">添加</button>
+      <button class="solid-btn" type="submit" :disabled="!name.trim() || adding">添加</button>
     </form>
     <p v-if="error" class="danger small">{{ error }}</p>
   </Sheet>

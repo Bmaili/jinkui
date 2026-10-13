@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自动填充服务的设置入口：系统设置里点金匮旁边的设置按钮时打开主界面 -->
+<autofill-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="app.jinkui.local.MainActivity" />

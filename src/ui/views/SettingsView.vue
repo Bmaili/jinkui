@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /** 设置：同步、安全、数据、本机、关于 */
-import { computed, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { autofill } from '../../platform/autofill'
 import Icon from '../components/Icon.vue'
 import Switch from '../components/Switch.vue'
 import {
@@ -20,6 +21,13 @@ const router = useRouter()
 const fileInput = ref<HTMLInputElement | null>(null)
 const busy = ref('')
 const trashCount = computed(() => trashedItems(vault.value).length)
+const autofillSub = ref('')
+async function refreshAutofill() {
+  const s = await autofill.status()
+  autofillSub.value = s.enabled ? '已开启' : s.supported ? '未开启：点这里看怎么设置' : '只在安卓 8 以上的手机上可用'
+}
+onMounted(refreshAutofill)
+onActivated(refreshAutofill)
 
 const LOCK_OPTS = [[0, '立即'], [30, '30 秒'], [60, '1 分钟'], [300, '5 分钟'], [900, '15 分钟']] as const
 const CLIP_OPTS = [[15, '15 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟'], [0, '不清空']] as const
@@ -144,6 +152,15 @@ async function wipe() {
         <button class="row" @click="router.push('/settings/sync')">
           <Icon :name="app.backend ? 'cloud' : 'cloud-off'" />
           <span class="grow">同步与设备<span class="sub">{{ syncSub }}</span></span>
+          <Icon name="right" />
+        </button>
+      </div>
+
+      <div class="group-title">自动填充</div>
+      <div class="group">
+        <button class="row" @click="router.push('/settings/autofill')">
+          <Icon name="key" />
+          <span class="grow">在其他 app 和网页里填密码<span class="sub">{{ autofillSub }}</span></span>
           <Icon name="right" />
         </button>
       </div>

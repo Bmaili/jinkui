@@ -13,6 +13,7 @@ export const router = createRouter({
     { path: '/settings/sync', component: () => import('./views/SyncView.vue') },
     { path: '/settings/password', component: () => import('./views/PasswordView.vue') },
     { path: '/settings/about', component: () => import('./views/AboutView.vue') },
+    { path: '/settings/autofill', component: () => import('./views/AutofillView.vue') },
     { path: '/:rest(.*)', redirect: '/' },
   ],
   scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },

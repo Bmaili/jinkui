@@ -3,7 +3,9 @@
 import { computed, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
-import { app, copyPlain, copySecret, removeItem, saveItem, toast, vault } from '../../store'
+import { App as CapApp } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
+import { app, copyPlain, copySecret, forgetApp, removeItem, saveItem, toast, vault } from '../../store'
 import { prefs } from '../../prefs'
 import { folderOf } from '../../core/folders'
 import { ask } from '../dialog'
@@ -23,6 +25,21 @@ const mask = (s: string) => '•'.repeat(Math.min(Math.max(s.length, 8), 16))
 async function toggleFav() {
   if (!item.value) return
   await saveItem(item.value.id, { favorite: item.value.favorite ? undefined : true })
+}
+
+/** 复制密码，然后退到后台：回到刚才的 app 直接粘贴（自动填充用不了时的办法） */
+async function copyAndReturn() {
+  if (!item.value?.password) return
+  await copySecret(item.value.password)
+  if (Capacitor.isNativePlatform()) await CapApp.minimizeApp()
+}
+
+const apps = computed(() => (Array.isArray(item.value?.apps) ? (item.value!.apps as string[]) : []))
+
+async function unlinkApp(pkg: string) {
+  if (!item.value) return
+  const ok = await ask({ title: '不再关联这个 app？', message: `${pkg}\n以后在这个 app 里填充时，不会再优先推荐这一条。`, ok: '取消关联' })
+  if (ok) await forgetApp(item.value.id, pkg)
 }
 
 async function del() {
@@ -92,6 +109,9 @@ async function del() {
         </div>
         <div v-if="!item.username && !item.password && !item.urls?.length && !item.totp && !item.fields?.length && !item.notes" class="row muted">没有内容</div>
       </div>
+      <button v-if="item.password && !item.deleted" class="solid-btn block ghost back-btn" @click="copyAndReturn">
+        <Icon name="copy" />复制密码并返回
+      </button>
 
       <template v-if="item.notes">
         <div class="group-title">备注</div>
@@ -104,6 +124,17 @@ async function del() {
       <div v-if="folder" class="tags">
         <span class="chip"><Icon name="folder" />{{ folder.name }}</span>
       </div>
+
+      <template v-if="apps.length">
+        <div class="group-title">自动填充时优先推荐的 app</div>
+        <div class="group">
+          <div v-for="p in apps" :key="p" class="row">
+            <Icon name="device" />
+            <span class="grow mono small">{{ p }}</span>
+            <button class="icon-btn sm" :aria-label="`取消关联 ${p}`" @click="unlinkApp(p)"><Icon name="close" /></button>
+          </div>
+        </div>
+      </template>
 
       <div class="group">
         <button class="row" @click="router.push(`/item/${item.id}/history`)">
@@ -133,6 +164,7 @@ async function del() {
 .tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .tags svg { width: 16px; height: 16px; }
 .meta { margin: 18px 4px 6px; line-height: 1.7; }
+.back-btn { margin: 4px 0 8px; min-height: 46px; }
 .del { display: inline-flex; align-items: center; gap: 6px; margin: 8px 0 20px; padding: 0 10px; }
 .del svg { width: 18px; height: 18px; }
 :deep(.filled) { fill: currentColor; }

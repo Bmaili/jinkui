@@ -75,3 +75,18 @@ describe('双槽写入', () => {
     expect(await s.read('v')).toBeNull()
   })
 })
+
+describe('两个写入方共用同一个存储（主界面和自动填充窗口）', () => {
+  it('交替写入时不会覆盖对方刚写的最新内容', async () => {
+    const raw = new MemRaw()
+    const a = new SlotStore(raw)
+    const b = new SlotStore(raw)
+    await a.write('v', utf8('a1'))
+    await b.write('v', utf8('b1'))
+    await a.write('v', utf8('a2'))
+    expect(await text(new SlotStore(raw), 'v')).toBe('a2')
+    // 上一份（b1）仍然完整地留在另一个槽位
+    const slots = [...raw.files.values()].map((x) => fromUtf8(x.slice(44))).sort()
+    expect(slots).toEqual(['a2', 'b1'])
+  })
+})

@@ -257,6 +257,110 @@ describe('金匮', () => {
     await b.waitForSelector('.entry')
     expect(await b.locator('.entry').count()).toBe(6)
   })
+
+  // ---------- 自动填充（原生插件用 window.__autofillMock 模拟） ----------
+
+  /** 在 A 的浏览器环境里打开一个“自动填充窗口”：和 A 共用本地数据，就像同一台手机上的 AutofillActivity */
+  async function autofillWindow(req: Record<string, unknown>): Promise<Page> {
+    const p = await a.context().newPage()
+    p.on('pageerror', (e) => console.error('自动填充窗口错误', e.message))
+    await p.addInitScript((r) => {
+      const w = window as unknown as Record<string, unknown>
+      w.__autofillMock = {
+        status: async () => ({ supported: true, enabled: false }),
+        openSettings: async () => ({ opened: false }),
+        disable: async () => {},
+        getRequest: async () => r,
+        fill: async (o: unknown) => void (w.__afResult = { kind: 'fill', ...(o as object) }),
+        close: async () => void (w.__afResult = { kind: 'close' }),
+      }
+    }, req)
+    await p.goto(site.url)
+    await p.waitForSelector('.af')
+    return p
+  }
+  const result = (p: Page) => p.waitForFunction(() => (window as unknown as { __afResult?: unknown }).__afResult).then((h) => h.jsonValue())
+
+  async function unlockIn(p: Page) {
+    await p.waitForSelector('text=已上锁')
+    await p.fill('[aria-label="主密码"]', PASS)
+    await p.click('button:has-text("解锁")')
+    await p.waitForSelector('.page .target, .save', { timeout: 30000 })
+  }
+
+  it('自动填充：网页按域名推荐；app 里选过一次就记住，下次排在推荐里', async () => {
+    // 网页：github.com 的登录页
+    let p = await autofillWindow({ mode: 'fill', packageName: 'com.android.chrome', appLabel: 'Chrome', webDomain: 'github.com', hasUsername: true, hasPassword: true })
+    await shot(p, 'autofill-lock')
+    await unlockIn(p)
+    await p.waitForSelector('.group-title:text-is("推荐")')
+    await shot(p, 'autofill-pick')
+    await p.click('.entry >> text=GitHub')
+    expect(await result(p)).toEqual({ kind: 'fill', username: 'octocat', password: 'changed-on-B' })
+    await p.close()
+
+    // app：淘宝。第一次没有推荐，搜索后选，默认记住
+    p = await autofillWindow({ mode: 'fill', packageName: 'com.taobao.taobao', appLabel: '淘宝', hasUsername: true, hasPassword: true })
+    await unlockIn(p)
+    expect(await p.locator('.group-title:text-is("推荐")').count()).toBe(0)
+    await p.fill('[aria-label="搜索"]', '淘宝')
+    await p.click('.entry >> text=淘宝')
+    expect(await result(p)).toEqual({ kind: 'fill', username: 'me@2.com', password: 'pw-淘宝' })
+    await p.close()
+
+    p = await autofillWindow({ mode: 'fill', packageName: 'com.taobao.taobao', appLabel: '淘宝', hasUsername: true, hasPassword: true })
+    await unlockIn(p)
+    await p.waitForSelector('.group-title:text-is("推荐")')
+    expect(await p.locator('.list').first().locator('.entry').count()).toBe(1)
+    expect(await p.locator('.list').first().textContent()).toContain('淘宝')
+    // 只有密码框时只填密码
+    await p.close()
+    p = await autofillWindow({ mode: 'fill', packageName: 'com.taobao.taobao', appLabel: '淘宝', hasUsername: false, hasPassword: true })
+    await unlockIn(p)
+    await p.click('.list >> nth=0 >> .entry')
+    expect(await result(p)).toEqual({ kind: 'fill', password: 'pw-淘宝' })
+    await p.close()
+  })
+
+  it('自动填充：登录后保存新账号；再次保存同样的账号时提示已保存', async () => {
+    const req = { mode: 'save', packageName: 'com.android.chrome', appLabel: 'Chrome', webDomain: 'accounts.example.com', hasUsername: true, hasPassword: true, username: 'new@ex.com', password: 'Sav3d-Pass!' }
+    let p = await autofillWindow(req)
+    await unlockIn(p)
+    await p.waitForSelector('#af-title')
+    expect(await p.inputValue('#af-title')).toBe('example.com')
+    await shot(p, 'autofill-save')
+    await p.click('.submit')
+    expect(await result(p)).toEqual({ kind: 'close' })
+    await p.close()
+
+    p = await autofillWindow(req)
+    await unlockIn(p)
+    await p.waitForSelector('text=已经保存在')
+    await p.close()
+
+    // 主界面回到前台后看得到新条目
+    await a.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await a.waitForSelector('text=已上锁')
+    await a.fill('[aria-label="主密码"]', PASS)
+    await a.click('button:has-text("解锁")')
+    // 解锁后回到离开前的页面（同步与设备），再回首页看条目
+    await a.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+    await a.goto(`${site.url}#/`)
+    await a.waitForSelector('.entry', { timeout: 30000 })
+    await a.click('.rail >> text=全部')
+    await a.waitForSelector('.entry >> text=example.com')
+    await a.click('.entry >> text=淘宝')
+    await a.waitForSelector('text=com.taobao.taobao')
+    await shot(a, 'item-apps')
+    await a.goto(`${site.url}#/settings/autofill`)
+    await a.waitForSelector('text=怎么用')
+    await shot(a, 'autofill-guide')
+  })
 })
 
 async function waitSyncedAfterEdit(page: Page) {

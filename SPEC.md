@@ -238,7 +238,7 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 ## 8. 发布
 
 - 推送到 `main`：GitHub Actions（`.github/workflows/android.yml`）跑单元测试、类型检查、构建网页、打包 APK，**只检查，不发布**。
-- 推送 `v1.0.N` 形式的 tag：同样的步骤，签名打包后发布到 Releases（文件 `jinkui-1.0.N.apk`），versionCode = 100 + N。发布只由 tag 触发，避免每次推送都给手机推更新。缺少签名 secret 时发布直接失败。
+- 推送到 `release` 分支（或推送 `v1.0.N` 形式的 tag）：同样的步骤，版本号取已有最大的 `v1.0.N` 加一，签名打包后打 tag、发布到 Releases（文件 `jinkui-1.0.N.apk`），versionCode = 100 + N。发布只由 `release` 分支或 tag 触发，避免每次推送都给手机推更新。缺少签名 secret 时发布直接失败。
 - 应用内更新读 `releases/latest`：tag 必须是 `v1.0.N`，安装包名以 `.apk` 结尾（不带 `unsigned`），说明里 `---` 之前的部分是更新内容。下载后核对 sha256（GitHub 给的 `digest`）、包名、签名、版本号。
 - **签名文件不在仓库里**，放在仓库 secrets（`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`）。绝不能换签名：换了只能卸载重装，卸载会删掉本地保险库。
 - **包名 `app.jinkui.local` 一旦发布不能改**，改了就是另一个 app。

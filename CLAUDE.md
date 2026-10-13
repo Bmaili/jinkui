@@ -38,7 +38,8 @@ npm run cap:sync             # 构建并同步到 android/
 ## 发布流程
 
 - 改完代码 → `npm test`、`npm run build` 全过（改了界面再跑 e2e，改了原生代码再跑 compile.sh）→ 提交 → 推送到 `main`。CI（`.github/workflows/android.yml`）跑测试并打包，只检查不发布。
-- **发布**：用户要发版时，在要发布的提交上打 `v1.0.N` 的 tag（N 比上一个大 1）并推送，CI 签名打包后发布到 Releases。tag 指向的提交说明就是 Release 说明：第一行写成用户能看懂的更新内容，`---` 之后的部分 app 里不显示。
+- **发布**：用户要发版时，把要发布的提交推到 `release` 分支（`git push origin main:release`）。CI 取已有最大的 `v1.0.N` 加一，签名打包，打 tag 并发布到 Releases。也可以推送 `v1.0.N` 的 tag，但这个环境的 git 代理不允许推 tag、也不允许用 API 建 tag，所以用 `release` 分支。
+- 被发布的那个提交的说明就是 Release 说明：第一行写成用户能看懂的更新内容，`---` 之后的部分 app 里不显示。发布前确认最后一个提交的说明写的是这一版的更新内容。
 - 推送后用 `https://api.github.com/repos/Bmaili/jinkui/commits/<sha>/check-runs` 查构建结果，失败时看 `.../check-runs/<id>/annotations`；发布后在 `.../releases` 下载 APK，用 `keytool -printcert -jarfile` 核对签名证书 SHA-256 指纹：`FC:85:0E:0C:7B:5A:5A:5E:95:6A:30:4A:70:1C:2D:95:C9:26:FD:C0:66:B2:33:9D:1C:B6:95:90:4B:4D:A3:5A`。不一致说明签名换了，**不要让用户安装**。
 - 签名文件不在仓库里，CI 从 secrets 读取。**绝不能换签名**：换了只能卸载重装，卸载会删掉本机保险库。
 - 应用内更新（`updateService.ts`）读 `releases/latest`：tag 必须是 `v1.0.N`，安装包名以 `.apk` 结尾且不带 `unsigned`，要保留 GitHub 给的 `digest`（sha256）。改 workflow 的发布步骤时别破坏这几点。

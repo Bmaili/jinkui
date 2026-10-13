@@ -26,7 +26,7 @@
 
 ## 签名（自己打包时）
 
-推送 `v1.0.N` 形式的 tag 时，GitHub Actions 会签名打包并发布到 Releases。需要在仓库 Settings → Secrets and variables → Actions 里添加 4 个 secret：
+推送到 `release` 分支（或推送 `v1.0.N` 形式的 tag）时，GitHub Actions 会签名打包并发布到 Releases。需要在仓库 Settings → Secrets and variables → Actions 里添加 4 个 secret：
 
 | 名称 | 内容 |
 | --- | --- |

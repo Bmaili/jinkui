@@ -1,12 +1,13 @@
 # 推送到 main：单元测试 → 类型检查 → 构建网页 → 打包 APK（只检查能否打包，不发布）。
-# 推送 v1.0.N 形式的 tag：同样的步骤，签名打包后发布到 Releases（app 内“检查更新”读的就是它）。
-# 发布只由 tag 触发，避免每次推送都给手机推更新（规格第 8 节）。
+# 推送到 release 分支：同样的步骤，版本号取已有最大的 v1.0.N 再加一，签名打包后发布到 Releases
+# （app 内“检查更新”读的就是它）。也可以直接推送 v1.0.N 形式的 tag。
+# 发布只由 release 分支或 tag 触发，避免每次推送都给手机推更新（规格第 8 节）。
 # 签名用的 4 个 secret 见 README“签名”一节；发布时缺少 secret 会直接失败，不会发出装不上的安装包。
 name: Android
 
 on:
   push:
-    branches: [main]
+    branches: [main, release]
     tags: ['v*']
     paths-ignore:
       - '**.md'
@@ -32,6 +33,8 @@ jobs:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: 计算版本号
         id: ver
@@ -46,6 +49,14 @@ jobs:
             echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
             echo "VERSION_CODE=$((100 + ${BASH_REMATCH[1]}))" >> "$GITHUB_ENV"
             echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF" = "refs/heads/release" ]; then
+            # 已有最大的 v1.0.N 加一
+            last=$(git tag -l 'v1.0.*' | sed -n 's/^v1\.0\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1)
+            n=$(( ${last:-0} + 1 ))
+            echo "VERSION_NAME=1.0.$n" >> "$GITHUB_ENV"
+            echo "VERSION_CODE=$((100 + n))" >> "$GITHUB_ENV"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "发布版本 1.0.$n"
           else
             echo "VERSION_NAME=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
             echo "VERSION_CODE=1" >> "$GITHUB_ENV"
@@ -145,6 +156,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
           name: 金匮 ${{ env.VERSION_NAME }}
           make_latest: true
           files: ${{ steps.apk.outputs.file }}

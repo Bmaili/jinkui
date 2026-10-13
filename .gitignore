@@ -3,3 +3,4 @@ dist
 *.log
 *.keystore
 *.jks
+e2e/out

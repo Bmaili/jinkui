@@ -1,0 +1,160 @@
+# 推送到 main：单元测试 → 类型检查 → 构建网页 → 打包 APK（只检查能否打包，不发布）。
+# 推送 v1.0.N 形式的 tag：同样的步骤，签名打包后发布到 Releases（app 内“检查更新”读的就是它）。
+# 发布只由 tag 触发，避免每次推送都给手机推更新（规格第 8 节）。
+# 签名用的 4 个 secret 见 README“签名”一节；发布时缺少 secret 会直接失败，不会发出装不上的安装包。
+name: Android
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'e2e/**'
+      - 'design/**'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 计算版本号
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            name="${GITHUB_REF#refs/tags/v}"
+            if ! [[ "$name" =~ ^1\.0\.([0-9]+)$ ]]; then
+              echo "::error title=tag 格式不对::发布用的 tag 必须是 v1.0.N（例如 v1.0.3），现在是 v$name"
+              exit 1
+            fi
+            # versionCode 只能变大：100 + N
+            echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+            echo "VERSION_CODE=$((100 + ${BASH_REMATCH[1]}))" >> "$GITHUB_ENV"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION_NAME=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+            echo "VERSION_CODE=1" >> "$GITHUB_ENV"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: 安装 age（验证和命令行互通）
+        run: sudo apt-get update -q && sudo apt-get install -y -q age
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元测试
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee -a "$RUNNER_TEMP/ci.log"
+
+      - name: 构建网页并复制到安卓工程
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee -a "$RUNNER_TEMP/ci.log"
+          npx cap sync android 2>&1 | tee -a "$RUNNER_TEMP/ci.log"
+
+      - name: Gradle 改用官方下载地址（工程里默认是国内镜像）
+        run: sed -i 's#^distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip#' android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: 准备签名文件
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.ver.outputs.release }}" = "true" ]; then
+            echo "::error title=没有签名::要发布正式版，请先在仓库 Settings → Secrets and variables → Actions 里添加 ANDROID_KEYSTORE_BASE64 等 4 个 secret"
+            exit 1
+          else
+            echo "::warning title=没有签名::还没有添加签名用的 secret，这次只检查能否打包。"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 打包 APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee -a "$RUNNER_TEMP/ci.log"
+
+      - name: 整理文件
+        id: apk
+        run: |
+          src=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          if [ "${{ steps.sign.outputs.signed }}" = "true" ]; then
+            out="jinkui-${VERSION_NAME}.apk"
+          else
+            out="jinkui-${VERSION_NAME}-unsigned.apk"
+          fi
+          cp "$src" "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          ls -l "$out"
+          # 打印证书指纹，方便核对每个版本是不是同一个签名
+          keytool -printcert -jarfile "$out" 2>/dev/null | grep -E 'SHA256:' || true
+
+      - name: 整理更新说明
+        id: notes
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          # 提交说明去掉 Claude-Session / Co-Authored-By 这类附注行
+          {
+            echo 'text<<NOTES_EOF'
+            git log -1 --format=%B | grep -v -E '^(Claude-Session|Co-Authored-By):' || true
+            echo
+            echo '---'
+            echo '在手机上下载下面的 APK，点开后选择“更新”即可覆盖安装，本机数据不会丢失。'
+            echo '第一次安装时系统会询问是否允许安装未知来源的应用，选允许。'
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 发布到 Releases
+        if: steps.ver.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: 金匮 ${{ env.VERSION_NAME }}
+          make_latest: true
+          files: ${{ steps.apk.outputs.file }}
+          body: ${{ steps.notes.outputs.text }}
+
+      - name: 失败时把日志结尾作为注释显示
+        if: failure()
+        run: |
+          if [ -f "$RUNNER_TEMP/ci.log" ]; then
+            grep -v '^\s*$' "$RUNNER_TEMP/ci.log" | tail -60 | cut -c1-200 > tail.txt || true
+            msg=$(sed -e 's/%/%25/g' -e 's/\r//g' tail.txt | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=构建失败（日志结尾）::${msg}"
+          fi

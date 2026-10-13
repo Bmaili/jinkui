@@ -1,0 +1,6 @@
+{
+  "appId": "app.jinkui.local",
+  "appName": "金匮",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false, "webContentsDebuggingEnabled": false }
+}

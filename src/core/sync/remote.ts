@@ -3,6 +3,17 @@
  *
  * version 是云端给出的版本标识（GitHub 是 blob sha，OSS 是 ETag），只用来判断“变没变”，不比较大小。
  */
+import { http, NetworkError, type HttpRequest, type HttpResponse } from '../http'
+
+/** 发请求；网络错误统一转成可重试的 RemoteError */
+export async function call(req: HttpRequest): Promise<HttpResponse> {
+  try {
+    return await http(req)
+  } catch (e) {
+    if (e instanceof NetworkError) throw new RemoteError(e.message)
+    throw e
+  }
+}
 
 export interface RemoteFile {
   path: string
@@ -30,6 +41,8 @@ export interface RemoteStore {
   put(path: string, bytes: Uint8Array, opts?: PutOpts): Promise<string>
   /** 删除；不存在时不报错 */
   remove(path: string): Promise<void>
+  /** 检查配置：能否访问、权限够不够。不写任何文件 */
+  test?(): Promise<void>
 }
 
 export class RemoteError extends Error {

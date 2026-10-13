@@ -17,6 +17,8 @@
 | 本地 | 本地也只存密文；解锁后明文只在内存里 | 手机丢了或被取证，本地文件同样看不到内容 |
 | 技术栈 | Capacitor + Vue 3 + TypeScript，与“浮生记”相同 | 复用同步后端、发版流程；以后做 iOS 也能复用 |
 | 自动填充 | 第一版不做 | 需要原生 AutofillService；核心逻辑写成与界面无关的模块、格式用标准 age，以后能在原生代码里重新实现 |
+| 同步后端 | 同一时间只用一个（GitHub 或 OSS） | 一个后端已经能覆盖多设备同步；两个同时开会让“以哪个为准”变复杂 |
+| 包名 | `app.jinkui.local` | **发布后不能改**，改了就是另一个 app |
 
 ## 3. 代码结构
 
@@ -27,12 +29,32 @@ src/core/            与平台无关、有单元测试的逻辑
   merge.ts           合并
   vault.ts           保险库状态与编辑操作（纯函数）、解析、删除标记清理
   crypto.ts          主密码、保险库密钥、加解密、云端文件路径
-  bytes.ts           编码与哈希
+  slots.ts           本地文件的双槽写入（写到一半断电也不坏）
+  generator.ts       密码生成器
+  csv.ts             CSV 导入导出
+  search.ts          搜索与排序
+  update.ts          应用内更新：解析 Releases、比较版本（沿用浮生记）
+  http.ts bytes.ts   HTTP 抽象、编码与哈希
   sync/remote.ts     云端存储接口、内存实现
+  sync/github.ts     GitHub（Contents API + Git Trees）
+  sync/oss.ts        阿里云 OSS（V4 签名，沿用浮生记）
   sync/deviceFile.ts 设备文件格式
   sync/engine.ts     同步引擎
   sync/setup.ts      建立保险库、加入、上传新密钥
-tests/               单元测试
+src/platform/        Capacitor 适配：files（本地文件）、vaultKey（指纹密钥）、clipboard、nativeHttp、device、appUpdate
+src/store.ts         应用层：解锁与上锁、编辑、同步调度、前后台
+src/prefs.ts         不含秘密的设置
+src/exporter.ts      导出 CSV、加密备份
+src/updateService.ts 应用内更新（沿用浮生记）
+src/ui/              界面：views/ 各页面，components/，style.css
+android/             Capacitor 安卓工程；原生插件在 app/src/main/java/app/jinkui/local/
+  VaultKeyPlugin.java        Keystore 指纹密钥（BiometricPrompt + CryptoObject）
+  SecureClipboardPlugin.java 敏感剪贴板、定时清空
+  AppUpdatePlugin.java       应用内更新（沿用浮生记）
+design/              图标源图 icon.svg 和渲染脚本 render.mjs
+tests/               单元测试；tests/mocks/ 下是 GitHub、OSS 的本地模拟服务器
+e2e/                 端到端测试（两台“手机”通过模拟 GitHub 同步，截图在 e2e/out/）；
+                     e2e/native/ 是原生代码的桩类编译检查和应用内更新下载测试
 ```
 
 ## 4. 数据格式（冻结：只能加字段，不能改已有字段的含义）
@@ -117,7 +139,7 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 一个条目的所有版本看成一个集合：版本号最大的是当前值，其余从新到旧取 50 个作为历史。两份保险库合并就是按条目取并集。
 
 - 满足交换律、结合律、幂等：不管各设备按什么顺序合并、合并多少次，最终一致。
-- 两台设备同时修改同一条：一个当选，另一个在历史里，可以在历史中查看、恢复。
+- 两台设备同时修改同一条：一个当选，另一个在历史里，可以在历史中查看、恢复。比较的单位是**整个条目**：A 改了密码、B 同时改了备注，结果是其中一份当选，另一份的修改要到历史里找回。（字段级合并以后可以考虑，需要每个字段单独的版本号。）
 - 删除就是一次修改（`deleted: true`），不是把条目拿掉，否则别的设备会把它同步回来。删除和修改冲突时同样按版本号决定，输的一方在历史里。
 - 彻底删除（`purged`）当选时，历史清空。
 - 删除标记保留 180 天后从保险库清掉。**已知限制**：超过 180 天没联网的旧设备，可能把已删除的条目带回来。
@@ -136,7 +158,22 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 | 修改后 | 停笔 3 秒后同步，期间再改就重新计时 |
 | 切到后台 | 有未上传的修改就立即同步 |
 | 点“立即同步” | 立即同步 |
-| 失败 | app 内指数退避重试；首页显示“有修改还没上传” |
+| 网络失败 | 10 秒、30 秒、2 分钟、5 分钟后重试；首页云朵图标显示“有修改未上传” |
+| 需要用户处理的失败 | 不自动重试，首页给出提示和按钮：密钥不一致 →“重新加入”（输入云端的主密码，本机条目合并过去）；云端保险库不见了 →“重新建立”；格式更新 →“去下载”；Token 无效 →“检查设置” |
+
+### 5.5 搜索
+
+按空格分词，每个词都要在标题、用户名、网址、备注、标签、自定义字段名里出现（不区分大小写）。标题命中的排前面，收藏在最前。内存里逐条匹配，不建索引。
+
+### 5.6 密码生成器
+
+长度 8–64（默认 20），可选小写、大写、数字、符号（`!@#$%^&*-_=+?.`，大多数网站都接受），默认去掉易混字符。每种选中的字符至少出现一次。随机数用 `crypto.getRandomValues` 加拒绝采样，没有取模偏差。
+
+### 5.7 导入导出
+
+- 导入 CSV：认得 Chrome / Edge、Bitwarden、KeePassXC、1Password 和中文表头。标题、用户名、密码、网址、备注都相同的条目跳过。
+- 导出明文 CSV（Chrome 格式，多出来的网址、自定义字段、TOTP 写进备注），导出加密备份（用主密码加密的 age 文件，内容是完整保险库 JSON，电脑上 `age -d` 输入主密码即可解开）。两种都要先输入主密码确认。
+- 导出文件写在缓存目录再调起系统分享，下次启动时删掉。
 
 ## 6. 加密与解锁
 
@@ -159,18 +196,22 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 - **文件大小和修改时间不加密**：别人能看出大概有多少条目、什么时候改过，看不到内容。
 - **忘记主密码**：已经加入的设备仍然能用（靠本机的指纹密钥），可以在设备上改主密码。所有设备都丢了又忘了主密码，就再也解不开。
 
-### 6.4 本机（待实现）
+### 6.4 本机
 
-- 本地保险库也是 `devices/<设备ID>.age` 同样的格式，存在 app 私有目录，原子写入（先写临时文件再改名）。
-- 保险库密钥在本机用 Android Keystore 里的 AES 密钥再加密一层：
-  - 主密码解锁：用主密码解开本机保存的 `identity.age` 副本；
-  - 指纹解锁：Keystore 密钥设置为需要生物识别才能使用（`setUserAuthenticationRequired`，用 `CryptoObject` 绑定）。指纹验证成功后系统才允许用这把密钥解密，不是由 JS 判断成功与否。
-  - 换了指纹或关掉锁屏后，Keystore 密钥失效，需要输一次主密码重新设置。
-- 解锁后明文只在内存里；切到后台超过设定时间（默认 1 分钟）自动上锁并清空内存。
-- 复制密码后 30 秒自动清空剪贴板；安卓 13 起把剪贴板内容标记为敏感（不在剪贴板预览里显示）。
-- `FLAG_SECURE`：不能截屏，最近任务里不显示内容。
-- 关闭系统备份：`android:allowBackup="false"`。
-- 日志里不输出任何条目内容、主密码、密钥。
+- 本地文件都在 app 私有目录的 `jinkui/` 下，每个文件两个槽位轮流写（`core/slots.ts`：头部带序号和 sha256，读时取校验通过、序号最大的），写到一半断电不会坏掉上一份。不依赖 rename 覆盖（Capacitor 各平台实现不一致）。
+  - `identity`：用主密码加密的保险库密钥（和云端 `keys/identity.age` 内容相同）。
+  - `vault`：本地保险库 `{ format, vault, dirty }`，加密给保险库公钥。
+  - `config`：同步后端配置（含 Token、AccessKey），加密给保险库公钥。
+  - `syncstate`：同步状态，加密给保险库公钥。
+  - Preferences 里只有不含秘密的设置：设备ID 和名字、保险库公钥、自动上锁时间、剪贴板时间、指纹密文（没有 Keystore 里的钥匙就是废数据）。
+- 主密码解锁：用主密码解开本机的 `identity`（scrypt 2^18，手机上一两秒）。
+- 指纹解锁（`VaultKeyPlugin.java`）：Keystore 里一把 AES-256-GCM 密钥，`setUserAuthenticationRequired(true)`，安卓 11 起限定每次使用都要强生物识别（`AUTH_BIOMETRIC_STRONG`，超时 0）；`setInvalidatedByBiometricEnrollment(true)`。保险库密钥用它加密。解锁时 BiometricPrompt 带 `CryptoObject`，指纹验证成功后系统才允许这把密钥解密，不是由网页判断成功与否。换了指纹、关掉锁屏后密钥失效（`KeyPermanentlyInvalidatedException`），提示用主密码解锁后重新开启。部分手机的人脸识别不是“强”生物识别，用不了。
+- 解锁后明文只在内存里；上锁时清掉。切到后台超过设定时间（立即 / 30 秒 / 1 分钟〔默认〕/ 5 分钟 / 15 分钟）后回来自动上锁。调起系统分享、选文件、安装更新时不算离开。
+- 复制密码（`SecureClipboardPlugin.java`）：标记为敏感内容（安卓 13 起不在剪贴板预览里显示），默认 30 秒后清空——如果剪贴板里还是我们复制的内容。app 被冻结、定时器没跑时，回到前台补清一次。
+- `FLAG_SECURE` 始终开启：不能截屏、录屏，最近任务里看不到内容。
+- 关闭系统备份：`android:allowBackup="false"` 和 `dataExtractionRules`。
+- 日志、错误信息里不出现任何条目内容、主密码、密钥。
+- 忘记主密码：锁屏页说明办法；只能“抹掉本机数据”重来（输入“抹掉”确认）。
 
 ## 7. 云端后端
 
@@ -178,31 +219,37 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 
 `list()` 列出全部文件及其版本标识；`get(path)`；`put(path, bytes, { ifVersion })`，`ifVersion: null` 表示只能新建；`remove(path)`。
 
-### 7.2 GitHub（待实现）
+### 7.2 GitHub
 
-- 配置：owner、仓库名、分支（默认 `main`）、Fine-grained PAT（只授予这一个仓库的 Contents 读写权限）、可选的 API 地址。
-- 用 Contents API 读写单个文件：更新时带上旧 blob sha，天然是条件写入；冲突返回 409 / 422。
-- 列表用 Git Trees API（递归），拿到每个文件的 blob sha。
-- 数据仓库必须和代码仓库分开，且是私有仓库。
+- 配置：仓库（`用户名/仓库名`，也接受完整网址）、Fine-grained PAT（只授予这一个仓库的 Contents 读写权限）；更多设置里有分支（默认 `main`）、仓库里的目录、API 地址。
+- 列表：`GET /git/trees/<分支>?recursive=1`，一个请求拿到全部文件和 blob sha。空仓库返回 409，当作空列表；分支不存在时报“分支不存在（默认分支是 …）”。
+- 读：Contents API，`Accept: application/vnd.github.raw+json`（单个文件最大 100 MB）。
+- 写、删：Contents API。更新时带上旧 blob sha：sha 对不上返回 409，文件已存在却没带 sha 返回 422，都当作冲突。每次写入是一个提交，提交说明 `jinkui: <路径>`（不含设备名）。
+- `test()`：仓库是**公开的直接拒绝**；Token 只有读权限时报错。
+- 数据仓库必须和代码仓库分开。
 
-### 7.3 阿里云 OSS（待实现）
+### 7.3 阿里云 OSS
 
-- 配置：Endpoint、Bucket、路径前缀、AccessKey（RAM 子账号，只授予这个前缀的权限）。V4 签名，沿用浮生记的实现。
-- “只能新建”用 `x-oss-forbid-overwrite: true`；覆盖写不做条件判断（每台设备只写自己的文件，不需要）。
+- 配置：Endpoint（默认 `oss-cn-hangzhou.aliyuncs.com`）、Bucket、AccessKey ID / Secret（RAM 子账号，只授予这个前缀的权限）；更多设置里有路径前缀（默认 `jinkui/`）。V4 签名，沿用浮生记的实现，测试里用阿里云官方 SDK 校验签名。
+- 版本标识用 ETag（列表和上传返回的一致，去掉引号）。
+- “只能新建”用 `x-oss-forbid-overwrite: true`（已存在时 409）；覆盖写不做条件判断（每台设备只写自己的文件，不需要）。
+- 真机上用原生 HTTP，不受跨域限制，Bucket 不用配 CORS。
 
-## 8. 发布（沿用浮生记，待配置）
+## 8. 发布
 
-- 推送到 `main` 后 GitHub Actions 跑测试、类型检查；打包签名 APK、发布到 Releases 的步骤等安卓工程建好后再加。
-- **签名文件不在仓库里**，放在仓库 secrets。绝不能换签名：换了只能卸载重装，卸载会删掉本地保险库。
+- 推送到 `main`：GitHub Actions（`.github/workflows/android.yml`）跑单元测试、类型检查、构建网页、打包 APK，**只检查，不发布**。
+- 推送 `v1.0.N` 形式的 tag：同样的步骤，签名打包后发布到 Releases（文件 `jinkui-1.0.N.apk`），versionCode = 100 + N。发布只由 tag 触发，避免每次推送都给手机推更新。缺少签名 secret 时发布直接失败。
+- 应用内更新读 `releases/latest`：tag 必须是 `v1.0.N`，安装包名以 `.apk` 结尾（不带 `unsigned`），说明里 `---` 之前的部分是更新内容。下载后核对 sha256（GitHub 给的 `digest`）、包名、签名、版本号。
+- **签名文件不在仓库里**，放在仓库 secrets（`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`）。绝不能换签名：换了只能卸载重装，卸载会删掉本地保险库。
 - **包名 `app.jinkui.local` 一旦发布不能改**，改了就是另一个 app。
-- 密码管理器的特殊风险：GitHub 账号被盗 = 攻击者可以发布带后门、签名合法的版本，应用内更新还会提示安装。至少要：GitHub 开启两步验证（最好用硬件密钥）、`main` 分支保护；发布改为手动打 tag 触发，不是每次推送都发。
+- 密码管理器的特殊风险：GitHub 账号被盗 = 攻击者可以发布带后门、签名合法的版本，应用内更新还会提示安装。GitHub 要开启两步验证（最好用硬件密钥或通行密钥）。
 
 ## 9. 路线图
 
-1. ✅ 核心：条目、版本号、合并、加密、同步引擎（内存后端）及测试
-2. GitHub、OSS 后端（本地模拟服务器测试）
-3. 安卓工程：Keystore 原生插件、本地存储、解锁、自动上锁、剪贴板
-4. 界面：建立 / 加入保险库、条目列表与搜索、编辑、密码生成器、历史、最近删除、设备列表、同步状态
-5. CI 打包签名、应用内更新
-6. 导入（浏览器 / Bitwarden / KeePass 导出的 CSV）、导出（age 加密的 JSON；明文 CSV 需二次确认）
-7. 第二阶段：TOTP 动态码、扫码添加设备、自动填充、iOS
+1. ✅ 核心：条目、版本号、合并、加密、同步引擎及测试
+2. ✅ GitHub、OSS 后端（本地模拟服务器测试）
+3. ✅ 安卓工程：Keystore 指纹密钥、敏感剪贴板、FLAG_SECURE、应用内更新
+4. ✅ 界面：建立 / 加入保险库、锁屏、列表与搜索、详情、编辑、密码生成器、历史、最近删除、设置、同步与设备
+5. ✅ 导入 CSV、导出明文 CSV 和加密备份
+6. ✅ CI 打包签名、按 tag 发布
+7. 第二阶段：TOTP 动态码、扫码添加设备、更换保险库密钥、字段级合并、自动填充、iOS

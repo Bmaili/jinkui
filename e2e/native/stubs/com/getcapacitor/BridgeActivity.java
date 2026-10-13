@@ -1,0 +1,1 @@
+package com.getcapacitor; public abstract class BridgeActivity extends androidx.fragment.app.FragmentActivity { public void registerPlugin(Class<? extends Plugin> c){} protected void onCreate(android.os.Bundle b){} }

@@ -5,15 +5,35 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "e2e": "vitest run --config vitest.e2e.config.ts",
+    "cap:sync": "npm run build && npx cap sync android"
   },
   "dependencies": {
-    "age-encryption": "^0.3.1"
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/device": "^8.0.3",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.3",
+    "age-encryption": "^0.3.1",
+    "vue": "^3.5.43",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
     "@types/node": "^26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "ali-oss": "^6.23.0",
+    "playwright": "^1.56.0",
     "typescript": "~5.9",
-    "vitest": "^5.0.4"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4",
+    "vue-tsc": "^3.3.13"
   }
 }

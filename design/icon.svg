@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <!-- 金匮：古铜色的匣子，正中一块象牙色锁片和锁孔。坐标按自适应图标的 108 格设计，主体在中间 66 格的安全区内 -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a7030" />
+      <stop offset="1" stop-color="#7d5820" />
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a87b38" />
+      <stop offset="1" stop-color="#86602a" />
+    </linearGradient>
+  </defs>
+  <!-- 匣盖 -->
+  <path d="M30 47 Q30 33 44 33 H64 Q78 33 78 47 Z" fill="url(#lid)" />
+  <!-- 匣身 -->
+  <rect x="29" y="49" width="50" height="28" rx="3.5" fill="url(#body)" />
+  <!-- 盖与身之间的铜边 -->
+  <rect x="28" y="45.5" width="52" height="5" rx="1.5" fill="#5e4114" />
+  <!-- 匣身底部的铜箍 -->
+  <rect x="29" y="70" width="50" height="2.6" fill="#6e4c1a" opacity="0.55" />
+  <!-- 锁片与锁孔 -->
+  <rect x="47" y="48" width="14" height="18" rx="3" fill="#efe2bf" />
+  <circle cx="54" cy="55" r="2.4" fill="#4a3310" />
+  <path d="M52.9 56.5 H55.1 L55.8 61.8 H52.2 Z" fill="#4a3310" />
+</svg>

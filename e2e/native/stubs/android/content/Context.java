@@ -1,0 +1,1 @@
+package android.content; public abstract class Context { public static final String CLIPBOARD_SERVICE="clipboard"; public Object getSystemService(String n){return null;} public abstract java.io.File getCacheDir(); public abstract android.content.pm.PackageManager getPackageManager(); public abstract String getPackageName(); public abstract void startActivity(Intent i); }

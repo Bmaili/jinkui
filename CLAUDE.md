@@ -22,17 +22,42 @@
 ## 命令
 
 ```bash
-npm test            # 单元测试，提交前必须全过
-npm run typecheck   # tsc 类型检查（开了 noUnusedLocals/Parameters）
+npm test                     # 单元测试，提交前必须全过
+npm run typecheck            # vue-tsc 类型检查（开了 noUnusedLocals/Parameters）
+npm run build                # 类型检查 + vite 构建
+PLAYWRIGHT_BROWSERS_PATH=<浏览器目录> npm run e2e   # 端到端测试（需先 build），截图在 e2e/out/
+bash e2e/native/compile.sh   # 用桩类编译全部原生代码（没有安卓 SDK 时）
+bash e2e/native/run.sh       # 应用内更新的原生下载逻辑测试
+PLAYWRIGHT_BROWSERS_PATH=<浏览器目录> node design/render.mjs   # 由 design/icon.svg 重新生成图标和启动图
+npm run cap:sync             # 构建并同步到 android/
 ```
 
 测试用很低的 scrypt 强度（`tests/helpers.ts` 的 `WF = 10`），正式是 18。`tests/crypto.test.ts` 在装了 `age` 命令行时会验证互通。
+改界面后要看截图（`e2e/out/`），亮色、暗色都看。改了原生代码要跑 `compile.sh`（改 `AppUpdatePlugin.java` 还要跑 `run.sh`），桩类不全时补桩类，最终以 CI 的真实打包为准。
 
-## 发布流程（安卓工程建好后补全）
+## 发布流程
 
-- 改完代码 → `npm test` 和 `npm run typecheck` 全过 → 提交 → 推送到 `main`。CI（`.github/workflows/ci.yml`）跑同样的检查。
-- 提交说明第一行写成用户能看懂的更新内容（以后会用作 Release 说明）。
+- 改完代码 → `npm test`、`npm run build` 全过（改了界面再跑 e2e，改了原生代码再跑 compile.sh）→ 提交 → 推送到 `main`。CI（`.github/workflows/android.yml`）跑测试并打包，只检查不发布。
+- **发布**：用户要发版时，在要发布的提交上打 `v1.0.N` 的 tag（N 比上一个大 1）并推送，CI 签名打包后发布到 Releases。tag 指向的提交说明就是 Release 说明：第一行写成用户能看懂的更新内容，`---` 之后的部分 app 里不显示。
+- 推送后用 `https://api.github.com/repos/Bmaili/jinkui/commits/<sha>/check-runs` 查构建结果，失败时看 `.../check-runs/<id>/annotations`；发布后在 `.../releases` 下载 APK，用 `keytool -printcert -jarfile` 核对签名证书 SHA-256 指纹：`FC:85:0E:0C:7B:5A:5A:5E:95:6A:30:4A:70:1C:2D:95:C9:26:FD:C0:66:B2:33:9D:1C:B6:95:90:4B:4D:A3:5A`。不一致说明签名换了，**不要让用户安装**。
+- 签名文件不在仓库里，CI 从 secrets 读取。**绝不能换签名**：换了只能卸载重装，卸载会删掉本机保险库。
+- 应用内更新（`updateService.ts`）读 `releases/latest`：tag 必须是 `v1.0.N`，安装包名以 `.apk` 结尾且不带 `unsigned`，要保留 GitHub 给的 `digest`（sha256）。改 workflow 的发布步骤时别破坏这几点。
 
 ## 代码结构与规格
 
 见 `SPEC.md` 第 3、4、5 节。改了行为要同步更新 `SPEC.md` 和 `README.md`。
+
+- 界面只通过 `src/store.ts` 改数据；保险库是不可变对象（`shallowRef`），编辑用 `core/vault.ts` 的纯函数生成新状态再 `commit`。
+- 本地文件一律经过 `platform/files.ts` 的 `SlotStore`，不要直接用 Filesystem 写保险库。
+- 视觉：“铜匮”——宣纸底、宋体，强调色古铜金 `--accent`，成功和开关用铜绿 `--ok`，深色是漆黑底。新界面沿用 `style.css` 的变量和 `.group / .row / .field / .solid-btn` 这些类，不引入新风格。
+
+## 常见的坑
+
+| 坑 | 正确做法 |
+| --- | --- |
+| Capacitor Filesystem 的 rename 覆盖行为各平台不一致 | 用 SlotStore 双槽写入，不靠 rename |
+| CapacitorHttp 的 fetch 补丁会损坏二进制请求体 | 真机上用 `platform/nativeHttp.ts` 直接调插件 |
+| scrypt 会卡住界面一两秒 | 先把“正在…”画出来（`requestAnimationFrame` 后再开始），按钮禁用 |
+| 端到端测试里 `text=加入`、`text=删除` 会先匹配到标题 | 用 `.actions .solid-btn`、`.dlg .btns >> text=删除` 这类限定在按钮区的选择器 |
+| 指纹框是系统界面 | 在浏览器和端到端测试里不可用；`window.__vaultKeyMock` 可以放假的实现 |
+| 云端环境没有安卓 SDK，也连不上 Google Maven | 原生代码用 `e2e/native/stubs/` 的桩类编译检查，最终看 CI |

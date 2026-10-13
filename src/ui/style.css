@@ -1,0 +1,265 @@
+/*
+ * 视觉方向：“铜匮”。延续浮生记的宣纸底与宋体，强调色换成古铜金（匮上的铜饰），
+ * 成功、开关用铜绿；深色是漆器的黑底，字是象牙白。
+ * 密码管理器以清楚为先：条目列表、字段、按钮都要一眼看清，不加多余的装饰。
+ */
+
+:root {
+  --bg: #f4efe4;
+  --surface: #fbf8f1;
+  --ink: #2a2622;
+  --muted: #6d655a;
+  --faint: #a59c8d;
+  --line: #e2d9c8;
+  --danger: #a8322a;
+  /* 古铜金：标题印章、强调、焦点 */
+  --accent: #8d6526;
+  --on-accent: #fbf8f1;
+  /* 铜绿：成功、开关 */
+  --ok: #3f7d6c;
+  --warn: #b0761f;
+  --paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .42 0 0 0 0 .34 0 0 0 0 .22 0 0 0 .08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  --sans: system-ui, -apple-system, 'HarmonyOS Sans SC', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --serif: 'Noto Serif SC', 'Noto Serif CJK SC', 'Source Han Serif SC', 'Source Han Serif CN', 'Songti SC', 'STSong', 'SimSun', serif;
+  /* 密码、用户名用等宽字体：0 和 O、1 和 l 容易分清 */
+  --mono: 'JetBrains Mono', 'Roboto Mono', 'DejaVu Sans Mono', ui-monospace, 'Menlo', 'Consolas', monospace;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --spring: cubic-bezier(0.3, 1.35, 0.5, 1);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171513;
+    --surface: #221f1c;
+    --ink: #ece5d6;
+    --muted: #a69e90;
+    --faint: #6f685e;
+    --line: #34302b;
+    --danger: #e0675c;
+    --accent: #cda262;
+    --on-accent: #171513;
+    --ok: #6fae98;
+    --warn: #d9a04a;
+    --paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .9 0 0 0 0 .86 0 0 0 0 .78 0 0 0 .04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body, .topbar {
+  background-color: var(--bg);
+  background-image: var(--paper, none);
+}
+html, body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-size-adjust: 100%;
+}
+body { min-height: 100vh; overflow-x: hidden; }
+
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
+
+.mono { font-family: var(--mono); letter-spacing: 0.01em; word-break: break-all; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.danger { color: var(--danger); }
+.small { font-size: 13px; }
+
+/* 顶栏 */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: calc(56px + var(--safe-top));
+  padding: var(--safe-top) 6px 0;
+}
+.topbar h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 0 8px;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  transition: transform 0.18s var(--spring), background-color 0.15s;
+}
+.icon-btn:active { background: var(--line); transform: scale(0.9); }
+.icon-btn svg { width: 22px; height: 22px; }
+.icon-btn.sm { width: 38px; height: 38px; }
+.icon-btn.sm svg { width: 20px; height: 20px; }
+.icon-btn.on { color: var(--accent); }
+
+.text-btn {
+  flex: none;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.text-btn:active { background: var(--line); }
+.text-btn:disabled { color: var(--faint); }
+.text-btn.accent { color: var(--accent); }
+.text-btn.danger { color: var(--danger); }
+
+.solid-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 25px;
+  background: var(--ink);
+  color: var(--bg);
+  font-weight: 700;
+  transition: transform 0.18s var(--spring), opacity 0.2s;
+}
+.solid-btn:disabled { opacity: 0.45; }
+.solid-btn:active { transform: scale(0.97); }
+.solid-btn.block { display: flex; width: 100%; }
+.solid-btn.ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--line); }
+.solid-btn.danger { background: var(--danger); color: #fff; }
+.solid-btn svg { width: 20px; height: 20px; }
+
+.field {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+textarea.field { padding: 12px 14px; resize: vertical; min-height: 96px; line-height: 1.6; }
+.field:focus { outline: none; border-color: var(--accent); }
+.field::placeholder { color: var(--faint); }
+
+label.lbl { display: block; margin: 16px 2px 6px; color: var(--muted); font-size: 14px; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+
+.page { padding: 0 16px calc(32px + var(--safe-bottom)); }
+
+/* 卡片式分组（设置、详情） */
+.group {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.group-title { margin: 22px 4px 4px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.row:first-child { border-top: 0; }
+button.row:active { background: var(--line); }
+.row .grow { flex: 1; min-width: 0; }
+.row .sub { display: block; color: var(--muted); font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.row > svg { flex: none; width: 20px; height: 20px; color: var(--muted); }
+
+.note-box {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.note-box.warn { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); }
+.note-box.err { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
+.note-box p { margin: 0 0 6px; }
+.note-box p:last-child { margin: 0; }
+
+.empty { padding: 64px 24px; color: var(--muted); text-align: center; }
+
+/* 印章：标题“金匮”旁的小方印 */
+.seal {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+@keyframes rise-in { from { opacity: 0; transform: translateY(12px); } }
+@keyframes fade-in { from { opacity: 0; } }
+.rise { animation: rise-in 0.36s var(--ease-out) backwards; }
+
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -3px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

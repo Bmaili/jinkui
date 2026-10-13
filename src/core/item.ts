@@ -26,6 +26,9 @@ export interface ItemContent {
   /** otpauth:// 链接或 Base32 密钥（第二阶段才显示动态码） */
   totp?: string
   fields?: CustomField[]
+  /** 所在目录的 ID（规格 4.5）；没有、或指向已删除的目录时是“未分类” */
+  folder?: string
+  /** 1.0.1 的标签，1.0.2 起界面上不再显示，数据原样保留 */
   tags?: string[]
   favorite?: boolean
   [extra: string]: unknown

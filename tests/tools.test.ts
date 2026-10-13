@@ -51,13 +51,13 @@ describe('CSV', () => {
       + '工作,1,login,邮箱,,,0,https://mail.x.com,me@x.com,secret,otpauth://totp/x?secret=ABC\n'
       + ',,note,银行卡备忘,"卡号尾号 1234",,0,,,,\n'
     const r = importCsv(csv)
-    expect(r.items[0]).toEqual({ type: 'login', title: '邮箱', username: 'me@x.com', password: 'secret', urls: ['https://mail.x.com'], totp: 'otpauth://totp/x?secret=ABC', tags: ['工作'], favorite: true })
+    expect(r.items[0]).toEqual({ type: 'login', title: '邮箱', username: 'me@x.com', password: 'secret', urls: ['https://mail.x.com'], totp: 'otpauth://totp/x?secret=ABC', folderName: '工作', favorite: true })
     expect(r.items[1]).toEqual({ type: 'note', title: '银行卡备忘', notes: '卡号尾号 1234' })
   })
 
   it('导入 KeePassXC 和中文表头；认不出表头时报错', () => {
-    expect(importCsv('"Group","Title","Username","Password","URL","Notes"\n"Root","QQ","123","pw","",""\n').items[0])
-      .toEqual({ type: 'login', title: 'QQ', username: '123', password: 'pw', tags: ['Root'] })
+    expect(importCsv('"Group","Title","Username","Password","URL","Notes"\n"Root","QQ","123","pw","",""\n"Root/银行","招行","u","p","",""\n').items)
+      .toEqual([{ type: 'login', title: 'QQ', username: '123', password: 'pw' }, { type: 'login', title: '招行', username: 'u', password: 'p', folderName: 'Root/银行' }])
     expect(importCsv('标题,用户名,密码,网址,备注\n淘宝,tb,mm,taobao.com,\n').items[0]).toMatchObject({ title: '淘宝', urls: ['taobao.com'] })
     expect(importCsv('a,b\n1,2\n').error).toMatch(/认不出/)
   })
@@ -66,11 +66,11 @@ describe('CSV', () => {
     const items = [
       { type: 'login', title: 'A', username: 'u', password: 'p,"x"', urls: ['https://a.com', 'https://b.com'], notes: 'n', totp: 'T', fields: [{ name: 'PIN', value: '0000' }], tags: ['t'] },
     ]
-    const csv = exportCsv(items)
+    const csv = exportCsv([{ ...items[0], folder: 'f1' }], (id) => (id === 'f1' ? '工作' : undefined))
     const back = importCsv(csv).items[0]
     expect(back.password).toBe('p,"x"')
     expect(back.urls).toEqual(['https://a.com'])
-    expect(back.notes).toBe('n\n\n网址: https://b.com\nTOTP: T\nPIN: 0000\n标签: t')
+    expect(back.notes).toBe('n\n\n网址: https://b.com\nTOTP: T\nPIN: 0000\n目录: 工作\n标签: t')
   })
 })
 

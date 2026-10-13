@@ -58,8 +58,11 @@ const COLUMNS: Record<string, string[]> = {
   type: ['type'],
 }
 
+/** 导入的条目；folderName 是原来的分组 / 文件夹名，导入时按名字放进目录（没有就新建） */
+export type ImportedItem = ItemContent & { folderName?: string }
+
 export interface ImportResult {
-  items: ItemContent[]
+  items: ImportedItem[]
   /** 认不出表头时的提示 */
   error?: string
   /** 空行、没有任何内容的行 */
@@ -87,7 +90,7 @@ export function importCsv(text: string): ImportResult {
     return { items: [], skipped: 0, error: '认不出表头：至少要有 password、username 或 notes 这类列' }
   }
   const get = (r: string[], k: keyof typeof COLUMNS) => (col[k] == null ? '' : (r[col[k]!] ?? '').trim())
-  const items: ItemContent[] = []
+  const items: ImportedItem[] = []
   let skipped = 0
   for (const r of rows.slice(1)) {
     const url = get(r, 'url')
@@ -102,22 +105,23 @@ export function importCsv(text: string): ImportResult {
     const type = get(r, 'type').toLowerCase()
     const isNote = type === 'note' || type === 'securenote' || (!username && !password && !url && !!notes.trim())
     const title = get(r, 'title') || hostOf(url) || username || '未命名'
-    const item: ItemContent = { type: isNote ? 'note' : 'login', title }
+    const item: ImportedItem = { type: isNote ? 'note' : 'login', title }
     if (username) item.username = username
     if (password) item.password = password
     if (url) item.urls = url.split(/[\n,]\s*/).map((u) => u.trim()).filter(Boolean)
     if (notes.trim()) item.notes = notes
     if (totp) item.totp = totp
+    // KeePass 的根分组叫 Root，不算目录
     const group = get(r, 'group')
-    if (group) item.tags = [group]
+    if (group && !/^root$/i.test(group)) item.folderName = group
     if (/^(1|true|yes|是)$/i.test(get(r, 'favorite'))) item.favorite = true
     items.push(item)
   }
   return { items, skipped }
 }
 
-/** 导出为 Chrome 格式。多出来的网址、自定义字段、动态码密钥写进备注，不丢信息 */
-export function exportCsv(items: ItemContent[]): string {
+/** 导出为 Chrome 格式。多出来的网址、自定义字段、动态码密钥、目录写进备注，不丢信息 */
+export function exportCsv(items: ItemContent[], folderName: (id: string | undefined) => string | undefined = () => undefined): string {
   const rows: string[][] = [['name', 'url', 'username', 'password', 'note']]
   for (const it of items) {
     const urls = it.urls ?? []
@@ -125,6 +129,8 @@ export function exportCsv(items: ItemContent[]): string {
     if (urls.length > 1) extra.push(...urls.slice(1).map((u) => `网址: ${u}`))
     if (it.totp) extra.push(`TOTP: ${it.totp}`)
     for (const f of it.fields ?? []) extra.push(`${f.name}: ${f.value}`)
+    const folder = folderName(it.folder)
+    if (folder) extra.push(`目录: ${folder}`)
     if (it.tags?.length) extra.push(`标签: ${it.tags.join(', ')}`)
     const note = [it.notes ?? '', ...(extra.length ? [extra.join('\n')] : [])].filter(Boolean).join('\n\n')
     rows.push([it.title, urls[0] ?? '', it.username ?? '', it.password ?? '', note])

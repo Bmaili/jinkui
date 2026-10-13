@@ -5,10 +5,11 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import Switch from '../components/Switch.vue'
 import GeneratorSheet from '../components/GeneratorSheet.vue'
-import { addItem, saveItem, toast, vault } from '../../store'
+import { addFolder, addItem, saveItem, toast, vault } from '../../store'
+import { checkFolderName, folderOf, liveFolders } from '../../core/folders'
 import type { CustomField, ItemContent } from '../../core/item'
 import { estimateBits, strengthLabel } from '../../core/generator'
-import { ask } from '../dialog'
+import { ask, promptText } from '../dialog'
 import { hostOf } from '../format'
 
 const route = useRoute()
@@ -25,7 +26,8 @@ interface Form {
   notes: string
   totp: string
   fields: CustomField[]
-  tags: string
+  /** 目录ID；空串是未分类 */
+  folder: string
 }
 
 const fromItem = (c?: ItemContent): Form => ({
@@ -37,7 +39,7 @@ const fromItem = (c?: ItemContent): Form => ({
   notes: c?.notes ?? '',
   totp: c?.totp ?? '',
   fields: (c?.fields ?? []).map((f) => ({ ...f })),
-  tags: (c?.tags ?? []).join('，'),
+  folder: folderOf(vault.value.folders, c ? c.folder : route.query.folder)?.id ?? '',
 })
 
 const form = reactive(fromItem(orig))
@@ -56,7 +58,6 @@ const isNote = computed(() => form.type === 'note')
 function toContent(f: Form = form): Partial<ItemContent> {
   const urls = f.urls.map((u) => u.trim()).filter(Boolean)
   const fields = f.fields.filter((x) => x.name.trim() || x.value).map((x) => ({ name: x.name.trim(), value: x.value, ...(x.secret ? { secret: true } : {}) }))
-  const tags = f.tags.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean)
   let title = f.title.trim()
   if (!title) title = urls[0] ? hostOf(urls[0]) : f.username.trim()
   return {
@@ -68,7 +69,7 @@ function toContent(f: Form = form): Partial<ItemContent> {
     notes: f.notes.trim() ? f.notes : undefined,
     totp: f.totp.trim() || undefined,
     fields: fields.length ? fields : undefined,
-    tags: tags.length ? tags : undefined,
+    folder: f.folder || undefined,
   }
 }
 
@@ -102,6 +103,16 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+const folders = computed(() => liveFolders(vault.value.folders))
+
+async function newFolder() {
+  const n = await promptText({ title: '新建目录', ok: '新建', input: { placeholder: '例如 银行' } })
+  if (n == null) return
+  const err = checkFolderName(n, vault.value.folders)
+  if (err) return toast(err)
+  form.folder = await addFolder(n)
 }
 
 function useGenerated(p: string) {
@@ -179,8 +190,12 @@ onBeforeRouteLeave(async () => {
       </div>
       <button type="button" class="text-btn add" @click="form.fields.push({ name: '', value: '', secret: true })"><Icon name="plus" />添加字段</button>
 
-      <label class="lbl" for="e-tags">标签（用逗号分开，可不填）</label>
-      <input id="e-tags" v-model="form.tags" class="field" placeholder="例如：工作，银行" />
+      <label class="lbl">目录</label>
+      <div class="folders">
+        <button type="button" class="chip" :class="{ on: !form.folder }" @click="form.folder = ''">未分类</button>
+        <button v-for="f in folders" :key="f.id" type="button" class="chip" :class="{ on: form.folder === f.id }" @click="form.folder = f.id">{{ f.name }}</button>
+        <button type="button" class="chip add-dir" @click="newFolder"><Icon name="plus" />新目录</button>
+      </div>
 
       <p v-if="error" class="note-box err">{{ error }}</p>
       <button class="solid-btn block save" type="submit" :disabled="saving || (!!id && !dirty)">保存</button>
@@ -207,4 +222,7 @@ onBeforeRouteLeave(async () => {
 .cf { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px; border: 1px dashed var(--line); border-radius: 16px; }
 .cf-tools { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .save { margin: 24px 0 12px; }
+.folders { display: flex; flex-wrap: wrap; gap: 8px; }
+.add-dir { border-style: dashed; color: var(--muted); }
+.add-dir svg { width: 14px; height: 14px; }
 </style>

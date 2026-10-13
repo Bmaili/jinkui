@@ -5,12 +5,14 @@ import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import { app, copyPlain, copySecret, removeItem, saveItem, toast, vault } from '../../store'
 import { prefs } from '../../prefs'
+import { folderOf } from '../../core/folders'
 import { ask } from '../dialog'
 import { hostOf, openUrl, timeAgo } from '../format'
 
 const route = useRoute()
 const router = useRouter()
 const item = computed(() => vault.value.items[String(route.params.id)])
+const folder = computed(() => folderOf(vault.value.folders, item.value?.folder))
 const shown = reactive<Record<string, boolean>>({})
 
 const deviceName = (id: string) =>
@@ -99,8 +101,8 @@ async function del() {
         </div>
       </template>
 
-      <div v-if="item.tags?.length" class="tags">
-        <span v-for="t in item.tags" :key="t" class="chip">{{ t }}</span>
+      <div v-if="folder" class="tags">
+        <span class="chip"><Icon name="folder" />{{ folder.name }}</span>
       </div>
 
       <div class="group">
@@ -129,6 +131,7 @@ async function del() {
 .notes p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .copy-note { position: absolute; top: 6px; right: 6px; }
 .tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.tags svg { width: 16px; height: 16px; }
 .meta { margin: 18px 4px 6px; line-height: 1.7; }
 .del { display: inline-flex; align-items: center; gap: 6px; margin: 8px 0 20px; padding: 0 10px; }
 .del svg { width: 18px; height: 18px; }

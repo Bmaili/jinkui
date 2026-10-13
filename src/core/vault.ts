@@ -4,6 +4,7 @@
 import { HISTORY_MAX, contentOf, isItem, sameContent, snapshotOf, type Item, type ItemContent } from './item'
 import { mergeItems, normalizeHistory } from './merge'
 import { maxRev, nextRev, type Rev } from './rev'
+import { checkFolderName, isFolder, mergeFolders, putFolder, type Folder, type Folders } from './folders'
 
 /** 当前格式版本。只能加字段，不能改已有字段的含义；真要不兼容地改才加一 */
 export const FORMAT = 1
@@ -11,6 +12,8 @@ export const FORMAT = 1
 export interface VaultState {
   format: number
   items: Record<string, Item>
+  /** 目录（1.0.2 起，规格 4.5）。旧数据没有这个字段 */
+  folders?: Folders
   /** 未知的顶层字段原样保留 */
   [extra: string]: unknown
 }
@@ -44,12 +47,26 @@ export function parseVault(json: unknown): { state: VaultState; skipped: string[
     if (isItem(item) && item.id === k) items[k] = item
     else skipped.push(k)
   }
-  return { state: { ...v, format: FORMAT, items }, skipped }
+  const state: VaultState = { ...v, format: FORMAT, items }
+  if (v.folders !== undefined) {
+    const folders: Folders = {}
+    if (v.folders && typeof v.folders === 'object' && !Array.isArray(v.folders)) {
+      for (const [k, f] of Object.entries(v.folders)) {
+        if (isFolder(f) && f.id === k) folders[k] = f
+        else skipped.push(`folder:${k}`)
+      }
+    }
+    state.folders = folders
+  }
+  return { state, skipped }
 }
 
 export function mergeVaults(local: VaultState, remote: VaultState): VaultState {
   // 顶层未知字段：本地已有的优先，其次补上远端的
-  return { ...remote, ...local, format: FORMAT, items: mergeItems(local.items, remote.items) }
+  const out: VaultState = { ...remote, ...local, format: FORMAT, items: mergeItems(local.items, remote.items) }
+  if (local.folders || remote.folders) out.folders = mergeFolders(local.folders, remote.folders)
+  else delete out.folders
+  return out
 }
 
 /** 保险库里见过的最大版本号（含历史），新修改的版本号要比它大 */
@@ -59,6 +76,7 @@ export function vaultMaxRev(state: VaultState): Rev | null {
       yield it.rev
       for (const h of it.history ?? []) yield h.rev
     }
+    for (const f of Object.values(state.folders ?? {})) yield f.rev
   }
   return maxRev(revs())
 }
@@ -160,7 +178,50 @@ export function gcTombstones(state: VaultState, now: number = Date.now()): Vault
     if (it.deleted && it.rev.t < now - TOMBSTONE_TTL) changed = true
     else items[id] = it
   }
-  return changed ? { ...state, items } : state
+  let folders = state.folders
+  if (folders) {
+    const kept: Folders = {}
+    for (const [id, f] of Object.entries(folders)) {
+      if (f.deleted && f.rev.t < now - TOMBSTONE_TTL) changed = true
+      else kept[id] = f
+    }
+    folders = kept
+  }
+  return changed ? { ...state, items, ...(folders ? { folders } : {}) } : state
+}
+
+// ---------- 目录（规格 4.5） ----------
+
+export function createFolder(state: VaultState, name: string, ctx: EditCtx): { state: VaultState; id: string } {
+  const err = checkFolderName(name, state.folders)
+  if (err) throw new Error(err)
+  const id = ctx.newId ?? crypto.randomUUID()
+  const folders = putFolder(state.folders, { id, name: name.trim() }, vaultMaxRev(state), ctx.device, ctx.now)
+  return { state: { ...state, folders }, id }
+}
+
+function existingFolder(state: VaultState, id: string): Folder {
+  const f = state.folders?.[id]
+  if (!f || f.deleted) throw new Error('目录不存在')
+  return f
+}
+
+export function renameFolder(state: VaultState, id: string, name: string, ctx: EditCtx): VaultState {
+  const f = existingFolder(state, id)
+  if (name.trim() === f.name) return state
+  const err = checkFolderName(name, state.folders, id)
+  if (err) throw new Error(err)
+  const { rev: _r, ...rest } = f
+  void _r
+  return { ...state, folders: putFolder(state.folders, { ...rest, name: name.trim() }, vaultMaxRev(state), ctx.device, ctx.now) }
+}
+
+/** 删除目录：只加删除标记，里面的条目变成“未分类”，条目本身不改 */
+export function deleteFolder(state: VaultState, id: string, ctx: EditCtx): VaultState {
+  const f = existingFolder(state, id)
+  const { rev: _r, ...rest } = f
+  void _r
+  return { ...state, folders: putFolder(state.folders, { ...rest, deleted: true }, vaultMaxRev(state), ctx.device, ctx.now) }
 }
 
 /** 界面上显示的条目（未删除），按标题排序 */

@@ -137,13 +137,17 @@ describe('金匮', () => {
     await b.waitForSelector('text=历史版本')
     await waitSyncedAfterEdit(b)
 
-    // 模拟 A 切到后台再回来（触发同步）
+    // 模拟 A 回到桌面再打开：离开就上锁，回来要先解锁；解锁后同步拉到 B 的修改
     await a.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
       document.dispatchEvent(new Event('visibilitychange'))
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
       document.dispatchEvent(new Event('visibilitychange'))
     })
+    await a.waitForSelector('text=已上锁')
+    await a.fill('[aria-label="主密码"]', PASS)
+    await a.click('button:has-text("解锁")')
+    await a.waitForSelector('.entry', { timeout: 30000 })
     await a.click('.entry >> text=GitHub')
     await a.click('[aria-label="显示密码"]')
     await a.waitForSelector('text=changed-on-B', { timeout: 30000 })
@@ -168,6 +172,59 @@ describe('金匮', () => {
     expect(await a.locator('.entry').count()).toBe(5)
   })
 
+  it('目录：新建、把条目放进去、按目录筛选；B 同步后也有', async () => {
+    await a.click('[aria-label="管理目录"]')
+    await a.fill('[aria-label="新目录的名字"]', '工作')
+    await a.click('.add .solid-btn')
+    await a.fill('[aria-label="新目录的名字"]', '生活')
+    await a.click('.add .solid-btn')
+    await a.waitForSelector('.sheet >> text=生活')
+    await shot(a, 'folders-manage')
+    await a.click('.sheet .head .text-btn')
+    // 刚建好的“生活”是选中的，里面还是空的
+    await a.waitForSelector('text=这个目录是空的')
+    await a.click('.rail >> text=全部')
+    for (const [title, dir] of [['GitHub', '工作'], ['招商银行', '生活'], ['淘宝', '生活']]) {
+      await a.click(`.entry >> text=${title}`)
+      await a.click('[aria-label="编辑"]')
+      await a.click(`.folders >> text=${dir}`)
+      await a.click('.save')
+      await a.waitForSelector('text=历史版本')
+      await a.goBack()
+      await a.waitForSelector('.rail')
+    }
+    await a.click('.rail >> text=生活')
+    expect(await a.locator('.entry').count()).toBe(2)
+    await a.click('.rail >> text=未分类')
+    expect(await a.locator('.entry').count()).toBe(2)
+    // 在目录里点“添加”：新条目默认放进这个目录
+    await a.click('.rail >> text=工作')
+    await a.click('[aria-label="添加"]')
+    await a.fill('#e-title', '公司邮箱')
+    await a.waitForSelector('.folders .chip.on >> text=工作')
+    await a.click('.save')
+    await a.waitForSelector('text=历史版本')
+    await a.goBack()
+    await a.waitForSelector('.rail')
+    expect(await a.locator('.entry').count()).toBe(2)
+    await shot(a, 'home-folders')
+    // 搜索查全部目录
+    await a.fill('[aria-label="搜索"]', '淘宝')
+    expect(await a.locator('.entry').count()).toBe(1)
+    await a.fill('[aria-label="搜索"]', '')
+    await a.click('.rail >> text=全部')
+    await waitSynced(a)
+
+    await b.goto(`${site.url}#/settings/sync`)
+    await b.click('text=立即同步')
+    await b.goto(`${site.url}#/`)
+    await b.waitForSelector('.rail >> text=生活', { timeout: 30000 })
+    await b.click('.rail >> text=生活')
+    expect(await b.locator('.entry').count()).toBe(2)
+    await shot(b, 'home-folders-dark')
+    await b.click('.rail >> text=全部')
+  })
+
   it('搜索、删除、恢复；设置页和同步页', async () => {
     await a.fill('[aria-label="搜索"]', 'wi-fi')
     expect(await a.locator('.entry').count()).toBe(1)
@@ -176,7 +233,7 @@ describe('金匮', () => {
     await a.click('button.del')
     await a.click('.dlg .btns >> text=删除')
     await a.waitForSelector('.search')
-    expect(await a.locator('.entry').count()).toBe(4)
+    expect(await a.locator('.entry').count()).toBe(5)
     await a.click('[aria-label="设置"]')
     await a.waitForSelector('text=同步与设备')
     await shot(a, 'settings')
@@ -198,7 +255,7 @@ describe('金匮', () => {
     await shot(b, 'sync-dark')
     await b.goto(`${site.url}#/`)
     await b.waitForSelector('.entry')
-    expect(await b.locator('.entry').count()).toBe(5)
+    expect(await b.locator('.entry').count()).toBe(6)
   })
 })
 

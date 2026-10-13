@@ -1,10 +1,12 @@
 <script setup lang="ts">
-/** 首页：搜索、条目列表、同步状态 */
-import { computed, ref } from 'vue'
+/** 首页：左侧目录、搜索、条目列表、同步状态 */
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import Sheet from '../components/Sheet.vue'
 import SyncBanner from '../components/SyncBanner.vue'
+import FolderSheet from '../components/FolderSheet.vue'
+import { folderOf, liveFolders } from '../../core/folders'
 import { app, enableBio, lock, syncNow, toast, vault } from '../../store'
 import { liveItems } from '../../core/vault'
 import { initialOf, searchItems } from '../../core/search'
@@ -16,7 +18,37 @@ defineOptions({ name: 'HomeView' })
 const router = useRouter()
 const q = ref('')
 const all = computed(() => liveItems(vault.value))
-const items = computed(() => searchItems(all.value, q.value))
+const folders = computed(() => liveFolders(vault.value.folders))
+/** 'all' 全部；'none' 未分类；其他是目录ID */
+const sel = ref<string>('all')
+const manage = ref(false)
+
+/** 每条实际所在的目录（目录被删了算未分类） */
+const placeOf = (it: (typeof all.value)[number]) => folderOf(vault.value.folders, it.folder)?.id ?? 'none'
+const counts = computed(() => {
+  const m = new Map<string, number>()
+  for (const it of all.value) {
+    const k = placeOf(it)
+    m.set(k, (m.get(k) ?? 0) + 1)
+  }
+  return m
+})
+const searching = computed(() => !!q.value.trim())
+/** 搜索时查全部目录；不搜索时按选中的目录筛选 */
+const items = computed(() => {
+  const pool = searching.value || sel.value === 'all' ? all.value : all.value.filter((it) => placeOf(it) === sel.value)
+  return searchItems(pool, q.value)
+})
+const selName = computed(() => (sel.value === 'all' ? '全部' : sel.value === 'none' ? '未分类' : folders.value.find((f) => f.id === sel.value)?.name ?? '全部'))
+
+// 选中的目录被删了（包括别的设备上删的）：回到全部
+watch(folders, (fs) => {
+  if (sel.value !== 'all' && sel.value !== 'none' && !fs.some((f) => f.id === sel.value)) sel.value = 'all'
+})
+
+function addItem() {
+  router.push(sel.value !== 'all' && sel.value !== 'none' && !searching.value ? `/edit?folder=${sel.value}` : '/edit')
+}
 
 const syncIcon = computed(() => {
   if (!app.backend) return 'cloud-off'
@@ -70,39 +102,59 @@ async function turnOnBio() {
 
     <div class="search">
       <Icon name="search" />
-      <input v-model="q" type="search" placeholder="搜索标题、用户名、网址、备注" aria-label="搜索" enterkeyhint="search"
+      <input v-model="q" type="search" placeholder="搜索全部目录" aria-label="搜索" enterkeyhint="search"
         autocapitalize="off" autocomplete="off" spellcheck="false" />
       <button v-if="q" class="icon-btn sm" aria-label="清空" @click="q = ''"><Icon name="close" /></button>
     </div>
 
-    <div class="page">
-      <SyncBanner />
+    <div class="body">
+      <nav class="rail" aria-label="目录">
+        <button class="dir" :class="{ on: sel === 'all' && !searching }" :aria-current="sel === 'all'" @click="sel = 'all'; q = ''">
+          <span class="dn">全部</span><span class="dc">{{ all.length }}</span>
+        </button>
+        <button v-for="f in folders" :key="f.id" class="dir" :class="{ on: sel === f.id && !searching }" :aria-current="sel === f.id" @click="sel = f.id; q = ''">
+          <span class="dn">{{ f.name }}</span><span class="dc">{{ counts.get(f.id) ?? 0 }}</span>
+        </button>
+        <button v-if="folders.length && counts.get('none')" class="dir" :class="{ on: sel === 'none' && !searching }" :aria-current="sel === 'none'" @click="sel = 'none'; q = ''">
+          <span class="dn">未分类</span><span class="dc">{{ counts.get('none') }}</span>
+        </button>
+        <button class="dir manage" aria-label="管理目录" @click="manage = true">
+          <Icon :name="folders.length ? 'pen' : 'plus'" /><span class="dn">{{ folders.length ? '管理' : '新建目录' }}</span>
+        </button>
+      </nav>
 
-      <div v-if="!all.length" class="empty">
-        <p>还没有保存任何密码。</p>
-        <button class="solid-btn" @click="router.push('/edit')"><Icon name="plus" />添加第一条</button>
-        <p class="small">也可以在“设置 → 从 CSV 导入”里，把浏览器或其他密码管理器导出的文件导进来。</p>
-      </div>
-      <div v-else-if="!items.length" class="empty">没有找到“{{ q }}”</div>
-      <ul v-else class="list">
-        <li v-for="it in items" :key="it.id">
-          <button class="entry" @click="router.push(`/item/${it.id}`)">
-            <span class="avatar" :style="{ background: avatarColor(it.title) }">
-              <Icon v-if="it.type === 'note'" name="note" />
-              <template v-else>{{ initialOf(it.title) }}</template>
-            </span>
-            <span class="text">
-              <span class="t">{{ it.title || '未命名' }}</span>
-              <span class="s mono">{{ subtitle(it) }}</span>
-            </span>
-            <Icon v-if="it.favorite" name="star" class="fav" />
-          </button>
-        </li>
-      </ul>
-      <p v-if="all.length" class="count faint small">共 {{ all.length }} 条</p>
+      <main class="main">
+        <SyncBanner />
+        <p v-if="searching" class="scope faint small">在全部目录中搜索</p>
+        <p v-else-if="sel !== 'all'" class="scope faint small">{{ selName }}</p>
+
+        <div v-if="!all.length" class="empty">
+          <p>还没有保存任何密码。</p>
+          <button class="solid-btn" @click="addItem"><Icon name="plus" />添加第一条</button>
+          <p class="small">也可以在“设置 → 从 CSV 导入”里，把浏览器或其他密码管理器导出的文件导进来。</p>
+        </div>
+        <div v-else-if="!items.length" class="empty">{{ searching ? `没有找到“${q}”` : '这个目录是空的' }}</div>
+        <ul v-else class="list">
+          <li v-for="it in items" :key="it.id">
+            <button class="entry" @click="router.push(`/item/${it.id}`)">
+              <span class="avatar" :style="{ background: avatarColor(it.title) }">
+                <Icon v-if="it.type === 'note'" name="note" />
+                <template v-else>{{ initialOf(it.title) }}</template>
+              </span>
+              <span class="text">
+                <span class="t">{{ it.title || '未命名' }}</span>
+                <span class="s mono">{{ subtitle(it) }}</span>
+              </span>
+              <Icon v-if="it.favorite" name="star" class="fav" />
+            </button>
+          </li>
+        </ul>
+        <p v-if="items.length" class="count faint small">共 {{ items.length }} 条</p>
+      </main>
     </div>
 
-    <button class="fab" aria-label="添加" @click="router.push('/edit')"><Icon name="plus" /></button>
+    <button class="fab" aria-label="添加" @click="addItem"><Icon name="plus" /></button>
+    <FolderSheet :open="manage" @close="manage = false" @created="(id) => (sel = id)" />
 
     <Sheet :open="app.offerBio" title="开启指纹解锁？" done="以后再说" @close="app.offerBio = false">
       <p class="muted">以后打开金匮只要按一下指纹。指纹由系统的安全芯片校验，金匮接触不到指纹数据。</p>
@@ -139,14 +191,55 @@ async function turnOnBio() {
 .search input { flex: 1; min-width: 0; height: 42px; border: 0; background: transparent; outline: none; }
 .search input::-webkit-search-cancel-button { display: none; }
 
+/* 左侧目录栏 + 右侧列表 */
+.body { display: flex; align-items: flex-start; }
+.rail {
+  position: sticky;
+  top: calc(56px + 54px + var(--safe-top));
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 92px;
+  max-height: calc(100vh - 56px - 54px - var(--safe-top));
+  overflow-y: auto;
+  padding: 2px 0 96px 8px;
+  scrollbar-width: none;
+}
+.rail::-webkit-scrollbar { display: none; }
+.dir {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 8px 8px 12px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  position: relative;
+}
+.dir:active { background: var(--line); }
+.dir.on { background: var(--surface); color: var(--ink); font-weight: 700; box-shadow: 0 1px 0 var(--line); }
+.dir.on::before { content: ''; position: absolute; left: 3px; top: 14px; bottom: 14px; width: 3px; border-radius: 2px; background: var(--accent); }
+.dn { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.dc { color: var(--faint); font-size: 12px; font-weight: 400; }
+.dir.manage { flex-direction: row; align-items: center; gap: 4px; min-height: 44px; margin-top: 6px; color: var(--accent); }
+.dir.manage svg { flex: none; width: 16px; height: 16px; }
+.dir.manage .dn { font-size: 13px; }
+.main { flex: 1; min-width: 0; padding: 0 14px 0 8px; }
+.scope { margin: 2px 4px 2px; }
+
 .list { list-style: none; margin: 0; padding: 0; }
 .entry {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
-  min-height: 66px;
-  padding: 8px 6px;
+  min-height: 64px;
+  padding: 8px 4px;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
@@ -157,9 +250,9 @@ async function turnOnBio() {
   display: grid;
   place-items: center;
   flex: none;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
   color: #fbf8f1;
   font-size: 18px;
   font-weight: 700;
@@ -170,9 +263,9 @@ async function turnOnBio() {
 .t { font-size: 16px; font-weight: 700; }
 .s { color: var(--muted); font-size: 13px; word-break: normal; }
 .fav { flex: none; width: 18px; height: 18px; color: var(--accent); fill: currentColor; }
-.count { margin: 14px 0 80px; text-align: center; }
+.count { margin: 14px 0 96px; text-align: center; }
 
-.empty { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 48px 8px; }
 .empty p { margin: 0; }
 
 .fab {

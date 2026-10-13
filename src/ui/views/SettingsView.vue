@@ -157,9 +157,14 @@ async function wipe() {
         </div>
         <button class="row" @click="cycleLock">
           <Icon name="clock" />
-          <span class="grow">自动上锁<span class="sub">离开 app 多久后上锁（点按切换）</span></span>
+          <span class="grow">自动上锁<span class="sub">{{ prefs.autoLockSec ? '离开 app 多久后上锁（点按切换）' : '回到桌面或切到别的 app 就上锁（点按切换）' }}</span></span>
           <span class="val">{{ label(LOCK_OPTS, prefs.autoLockSec) }}</span>
         </button>
+        <div class="row">
+          <Icon name="eye-off" />
+          <span class="grow">防止截屏<span class="sub">{{ prefs.blockScreenshots ? '不能截屏、录屏，最近任务里也看不到内容' : '已关闭：可以截屏，最近任务里会显示金匮的画面' }}</span></span>
+          <Switch v-model="prefs.blockScreenshots" label="防止截屏" />
+        </div>
         <button class="row" @click="cycleClip">
           <Icon name="copy" />
           <span class="grow">清空剪贴板<span class="sub">复制密码后多久清空（点按切换）</span></span>

@@ -16,7 +16,7 @@ const open = reactive<Record<string, boolean>>({})
 const shown = reactive<Record<string, boolean>>({})
 
 const LABELS: Record<string, string> = {
-  title: '标题', username: '用户名', password: '密码', urls: '网址', notes: '备注', totp: '两步验证', fields: '自定义字段', tags: '标签', favorite: '收藏', deleted: '删除', type: '类型',
+  title: '标题', username: '用户名', password: '密码', urls: '网址', notes: '备注', totp: '两步验证', fields: '自定义字段', tags: '标签', folder: '目录', favorite: '收藏', deleted: '删除', type: '类型',
 }
 const key = (s: Snapshot) => `${s.rev.t}.${s.rev.c}.${s.rev.d}`
 const deviceName = (id: string) =>

@@ -24,15 +24,19 @@ import { KeyMismatchError, NotInitializedError, SyncEngine, type SyncHost, type 
 import type { DeviceInfo } from './core/sync/deviceFile'
 import { initRemote, joinRemote, probeRemote, uploadWrappedKey, type Probe } from './core/sync/setup'
 import {
-  FORMAT, FormatTooNewError, createItem, deleteItem, emptyVault, gcTombstones, mergeVaults, parseVault, purgeItem, restoreItem,
-  revertTo, updateItem, type VaultState,
+  FORMAT, FormatTooNewError, createFolder, createItem, deleteFolder, deleteItem, emptyVault, gcTombstones, mergeVaults, parseVault,
+  purgeItem, renameFolder, restoreItem, revertTo, updateItem, type VaultState,
 } from './core/vault'
+import { liveFolders } from './core/folders'
+import type { ImportedItem } from './core/csv'
 import type { Rev } from './core/rev'
 import { files, wipeLocal } from './platform/files'
 import { bioEnroll, bioRemove, bioStatus, bioUnlock, type BioStatus } from './platform/vaultKey'
 import { clearIfDue, copyText } from './platform/clipboard'
+import { setScreenshotBlocking } from './platform/privacy'
 import { defaultDeviceName, newDeviceId } from './platform/device'
 import { loadPrefs, prefs, resetPrefs, savePrefs } from './prefs'
+import { watch } from 'vue'
 
 export type BackendConfig =
   | { type: 'github'; github: GitHubConfig }
@@ -123,6 +127,7 @@ export async function init(): Promise<void> {
   app.bio = await bioStatus()
   const id = await files.read('identity')
   app.phase = id && prefs.recipient ? 'locked' : 'setup'
+  watch(() => prefs.blockScreenshots, (on) => void setScreenshotBlocking(on), { immediate: true })
   installLifecycle()
 }
 
@@ -148,6 +153,7 @@ async function openWith(k: KeyBundle): Promise<void> {
   app.sync.error = ''
   app.sync.errorKind = ''
   engine = new SyncEngine(host)
+  hiddenAt = 0
   app.phase = 'unlocked'
   requestSync(0)
 }
@@ -279,25 +285,53 @@ export async function revert(id: string, rev: Rev): Promise<void> {
   await commit(revertTo(vault.value, id, rev, ctx()))
 }
 
-/** 批量导入（CSV）。标题、用户名、密码、网址都相同的条目跳过 */
-export async function importItems(items: ItemContent[]): Promise<{ added: number; duplicates: number }> {
+/** 批量导入（CSV）。标题、用户名、密码、网址都相同的条目跳过；原来的分组按名字放进目录（没有就新建） */
+export async function importItems(items: ImportedItem[]): Promise<{ added: number; duplicates: number }> {
   const key = (c: Partial<ItemContent>) => JSON.stringify([c.title ?? '', c.username ?? '', c.password ?? '', (c.urls ?? [])[0] ?? '', c.notes ?? ''])
   const seen = new Set(Object.values(vault.value.items).filter((i) => !i.deleted).map(key))
   let s = vault.value
   let added = 0
   let duplicates = 0
-  for (const c of items) {
+  const folderIds = new Map(liveFolders(s.folders).map((f) => [f.name.trim().toLowerCase(), f.id]))
+  for (const { folderName, ...c } of items) {
     const k = key(c)
     if (seen.has(k)) {
       duplicates++
       continue
     }
     seen.add(k)
+    const fname = folderName?.trim().slice(0, 20)
+    if (fname) {
+      let fid = folderIds.get(fname.toLowerCase())
+      if (!fid) {
+        const r = createFolder(s, fname, ctx())
+        s = r.state
+        fid = r.id
+        folderIds.set(fname.toLowerCase(), fid)
+      }
+      c.folder = fid
+    }
     s = createItem(s, c, ctx()).state
     added++
   }
   await commit(s)
   return { added, duplicates }
+}
+
+// ---------- 目录 ----------
+
+export async function addFolder(name: string): Promise<string> {
+  const r = createFolder(vault.value, name, ctx())
+  await commit(r.state)
+  return r.id
+}
+
+export async function renameFolderById(id: string, name: string): Promise<void> {
+  await commit(renameFolder(vault.value, id, name, ctx()))
+}
+
+export async function removeFolder(id: string): Promise<void> {
+  await commit(deleteFolder(vault.value, id, ctx()))
 }
 
 export async function copySecret(text: string, label = '密码'): Promise<void> {
@@ -506,7 +540,13 @@ export async function changeMasterPassword(oldPass: string, newPass: string): Pr
 
 export async function enableBio(): Promise<void> {
   if (!keys) throw new Error('已上锁')
-  prefs.bioData = await bioEnroll(keys.identity)
+  // 部分手机弹出指纹框时 app 会收到“切到后台”，这一次不上锁
+  const done = expectExternal()
+  try {
+    prefs.bioData = await bioEnroll(keys.identity)
+  } finally {
+    setTimeout(done, 1500)
+  }
   await savePrefs()
 }
 
@@ -547,9 +587,21 @@ export function expectExternal(): () => void {
   }
 }
 
+/**
+ * 切到后台（规格 6.4）。自动上锁设为“立即”时，离开就当作退出：先把没上传的修改传完，再上锁、清掉内存里的明文。
+ * 调起系统分享、选文件、指纹框、安装更新时不算离开（expectExternal）。
+ */
 function onHide() {
+  if (app.phase !== 'unlocked' || external) return
   hiddenAt = Date.now()
-  if (app.phase === 'unlocked' && app.sync.pending) void syncNow()
+  if (prefs.autoLockSec === 0) void lockAfterSync()
+  else if (app.sync.pending) void syncNow()
+}
+
+async function lockAfterSync() {
+  if (app.sync.pending) await syncNow().catch(() => false)
+  // 同步期间用户已经回来了（hiddenAt 被清零）就不锁；回来时 onShow 会按规则处理
+  if (hiddenAt && app.phase === 'unlocked' && !external) lock()
 }
 
 function onShow() {

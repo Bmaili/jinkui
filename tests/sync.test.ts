@@ -302,3 +302,22 @@ describe('异常数据', () => {
     expect(remote.calls.filter((c) => c === 'list')).toHaveLength(2) // initRemote 一次 + 同步一次
   })
 })
+
+describe('目录同步', () => {
+  it('A 建的目录和放进去的条目，B 同步后看得到；B 改名，A 也跟着变', async () => {
+    const { createFolder, renameFolder } = await import('../src/core/vault')
+    const a = await newDevice('A')
+    const b = await newDevice('B')
+    const r = createFolder(a.state, '工作', { device: 'A', now: a.tick().now() })
+    a.state = r.state
+    const id = a.add({ type: 'login', title: '邮箱', folder: r.id })
+    await a.sync(remote)
+    await b.sync(remote)
+    expect(b.state.folders![r.id].name).toBe('工作')
+    expect(b.state.items[id].folder).toBe(r.id)
+    b.state = renameFolder(b.state, r.id, '公司', { device: 'B', now: b.tick(5000).now() })
+    await b.sync(remote)
+    await a.sync(remote)
+    expect(a.state.folders![r.id].name).toBe('公司')
+  })
+})

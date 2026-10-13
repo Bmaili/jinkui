@@ -9,6 +9,7 @@ import { utf8 } from './core/bytes'
 import { exportCsv } from './core/csv'
 import { DEFAULT_WORK_FACTOR } from './core/crypto'
 import { liveItems } from './core/vault'
+import { folderOf } from './core/folders'
 import { backupJson, expectExternal, vault } from './store'
 import { writeCacheFile } from './platform/files'
 
@@ -36,7 +37,8 @@ async function deliver(name: string, bytes: Uint8Array, mime: string): Promise<v
 export async function exportCsvFile(): Promise<number> {
   const items = liveItems(vault.value)
   // 加 BOM：Excel 打开中文不乱码
-  await deliver(`jinkui-${stamp()}.csv`, utf8('﻿' + exportCsv(items)), 'text/csv')
+  const name = (id: string | undefined) => folderOf(vault.value.folders, id)?.name
+  await deliver(`jinkui-${stamp()}.csv`, utf8('\uFEFF' + exportCsv(items, name)), 'text/csv')
   return items.length
 }
 

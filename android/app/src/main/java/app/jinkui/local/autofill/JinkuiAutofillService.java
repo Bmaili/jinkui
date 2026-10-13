@@ -8,6 +8,7 @@ import android.content.IntentSender;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.service.autofill.AutofillService;
+import android.service.autofill.Dataset;
 import android.service.autofill.FillCallback;
 import android.service.autofill.FillContext;
 import android.service.autofill.FillRequest;
@@ -63,7 +64,14 @@ public class JinkuiAutofillService extends AutofillService {
 
             String where = r.webDomain != null ? r.webDomain : null;
             RemoteViews presentation = presentation(where == null ? "用金匮填充" : "用金匮填充 · " + where);
-            FillResponse.Builder b = new FillResponse.Builder().setAuthentication(r.ids(), sender, presentation);
+            // 验证要挂在“这一组数据”（Dataset）上，不能挂在整个 FillResponse 上：
+            // 整个响应要验证时，系统只接受窗口交回一个新的 FillResponse，交回 Dataset 会被当成无效结果悄悄丢掉
+            // （1.0.3、1.0.4“选了账号却没填进去”的原因）。挂在 Dataset 上，窗口交回 Dataset 后系统直接填入。
+            // 值先留空（服务拿不到密码），由窗口交回的 Dataset 替换。
+            Dataset.Builder locked = new Dataset.Builder(presentation);
+            for (AutofillId id : r.ids()) locked.setValue(id, null);
+            locked.setAuthentication(sender);
+            FillResponse.Builder b = new FillResponse.Builder().addDataset(locked.build());
             if (r.passwordId != null) {
                 int types = SaveInfo.SAVE_DATA_TYPE_PASSWORD | (r.usernameId != null ? SaveInfo.SAVE_DATA_TYPE_USERNAME : 0);
                 SaveInfo.Builder si = new SaveInfo.Builder(types, new AutofillId[] {r.passwordId});

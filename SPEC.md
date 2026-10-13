@@ -208,7 +208,8 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 
 1. `JinkuiAutofillService.onFillRequest`：`FieldParser` 从页面结构里认出账号框、密码框（依据按可靠程度：app 声明的 autofillHints 和网页的 autocomplete / type；输入类型；控件 ID、提示文字、网页 name / id 里的关键词）。认出密码框但没认出账号框时，取密码框前面最近的文本框。跳过搜索框、验证码框、金匮自己。
 2. 只给系统一个需要验证的提示“用金匮填充（· 域名）”，同时带上 SaveInfo（有密码框时），以便登录后提示保存。服务本身不解密、拿不到任何密码。
-3. 用户点提示，系统打开 `AutofillActivity`（独立任务、不进最近任务、每次都要重新解锁）。服务把认出的账号框、密码框的 `AutofillId` 和包名、域名直接放进 Intent（1.0.4 起，“随请求”）：交回系统的 Dataset 必须用这次请求里原样的 ID，重新解析出来的 ID 在 Chrome、部分 app 里对不上，系统会静默丢掉，表现为“选了账号却没填进去”。Intent 里没有这些 ID 时（旧版本发出的请求），再退回解析系统放进来的页面结构。
+   这个提示是一个**需要验证的 Dataset**（值留空，`Dataset.Builder.setAuthentication`），不是需要验证的整个 FillResponse：整个响应要验证时，系统只接受窗口交回 FillResponse，交回的 Dataset 会被当成无效结果悄悄丢掉（1.0.3、1.0.4 “选了账号却没填进去”就是这个原因，1.0.5 修复）。挂在 Dataset 上，窗口交回 Dataset 后系统直接填入，用户只点一次。
+3. 用户点提示，系统打开 `AutofillActivity`（独立任务、不进最近任务、每次都要重新解锁）。服务把认出的账号框、密码框的 `AutofillId` 和包名、域名直接放进 Intent（1.0.4 起，“随请求”），窗口交回的 Dataset 用这些原样的 ID，保证和提示里的一致。Intent 里没有这些 ID 时（旧版本发出的请求），再退回解析系统放进来的页面结构。
 4. 窗口里先解锁（自动弹指纹），列出推荐和全部条目（`core/autofill.ts`）：
    - 网页按域名：条目网址的主机名相同 3 分，同属一个主域名（`login.taobao.com` 和 `taobao.com`，`.com.cn` 等两段式后缀取三段）2 分；
    - app 按包名：条目 `apps` 里有这个包名 3 分；包名里的词（≥4 个字母、去掉 com / android 等）和条目网址的主域名、标题对得上 1 分。网页请求不按浏览器的包名猜。

@@ -38,7 +38,22 @@ const others = computed(() => {
   return searchItems(logins.value.filter((i) => !s.has(i.id)), '')
 })
 
-async function pick(it: Item) {
+autofill.log(`网页启动：${req.mode === 'save' ? '保存' : '填充'} 账号框=${req.hasUsername ? '有' : '无'} 密码框=${req.hasPassword ? '有' : '无'}`)
+watch(() => app.phase, (ph) => {
+  if (ph === 'unlocked') autofill.log(`已解锁，推荐 ${suggested.value.length} 条`)
+  if (ph === 'setup') autofill.log('本机还没有保险库')
+})
+
+/** 交回结果后窗口应该马上关掉；几秒后还在，说明没交回去 */
+function watchClose() {
+  setTimeout(() => {
+    autofill.log('交回结果后窗口没有关闭')
+    error.value = '没能把账号密码交回系统。可以在“设置 → 诊断记录”里查看原因，或者先用条目详情里的“复制密码并返回”。'
+    busy.value = false
+  }, 4000)
+}
+
+async function pick(it: Item, from: string) {
   if (busy.value) return
   error.value = ''
   const username = req.hasUsername ? it.username : undefined
@@ -48,10 +63,13 @@ async function pick(it: Item) {
     return
   }
   busy.value = true
+  autofill.log(`选择了一条（${from}），交回 账号=${username ? '有' : '无'} 密码=${password ? '有' : '无'}`)
   try {
     if (remember.value && req.packageName && !isWeb && !remembersApp(it, req.packageName)) await rememberApp(it.id, req.packageName)
     await autofill.fill({ username, password })
+    watchClose()
   } catch (e) {
+    autofill.log(`交回失败：${(e as Error).message}`)
     error.value = (e as Error).message
     busy.value = false
   }
@@ -95,13 +113,17 @@ async function save() {
     })
     if (req.mode === 'fill') {
       // 填充时新建：存好直接填进去
+      autofill.log('新建了一条，交回填充')
       await autofill.fill({ username: req.hasUsername ? form.username || undefined : undefined, password: req.hasPassword ? form.password : undefined })
       void id
+      watchClose()
     } else {
+      autofill.log(updateId.value ? '更新了已有条目' : '保存了新条目')
       await syncBeforeClose(5000)
       await autofill.close()
     }
   } catch (e) {
+    autofill.log(`保存失败：${(e as Error).message}`)
     error.value = (e as Error).message
     busy.value = false
   }
@@ -185,7 +207,7 @@ function generate() {
           <div class="group-title">推荐</div>
           <ul class="list">
             <li v-for="it in suggested" :key="it.id">
-              <button class="entry" :disabled="busy" @click="pick(it)">
+              <button class="entry" :disabled="busy" @click="pick(it, '推荐')">
                 <span class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
                 <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
               </button>
@@ -195,7 +217,7 @@ function generate() {
         <div class="group-title">{{ q.trim() ? '搜索结果' : suggested.length ? '其他' : '全部' }}</div>
         <ul class="list">
           <li v-for="it in others" :key="it.id">
-            <button class="entry" :disabled="busy" @click="pick(it)">
+            <button class="entry" :disabled="busy" @click="pick(it, q.trim() ? '搜索' : '其他')">
               <span class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
               <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
             </button>

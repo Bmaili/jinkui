@@ -46,6 +46,7 @@ src/core/            与平台无关、有单元测试的逻辑
 src/platform/        Capacitor 适配：files（本地文件）、vaultKey（指纹密钥）、clipboard、nativeHttp、device、appUpdate
 src/store.ts         应用层：解锁与上锁、编辑、同步调度、前后台
 src/prefs.ts         不含秘密的设置
+src/diag.ts          诊断记录（不含任何秘密，见 6.5）
 src/exporter.ts      导出 CSV、加密备份
 src/updateService.ts 应用内更新（沿用浮生记）
 src/ui/              界面：views/ 各页面，components/，style.css
@@ -57,6 +58,7 @@ android/             Capacitor 安卓工程；原生插件在 app/src/main/java/
   autofill/JinkuiAutofillService.java  系统自动填充服务
   autofill/FieldParser.java  从页面结构里认出账号框、密码框
   autofill/PendingSaves.java 待保存的账号密码（只在进程内存里）
+  autofill/AutofillLog.java  自动填充的诊断记录
   SecureClipboardPlugin.java 敏感剪贴板、定时清空
   AppUpdatePlugin.java       应用内更新（沿用浮生记）
 design/              图标源图 icon.svg 和渲染脚本 render.mjs
@@ -206,7 +208,7 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 
 1. `JinkuiAutofillService.onFillRequest`：`FieldParser` 从页面结构里认出账号框、密码框（依据按可靠程度：app 声明的 autofillHints 和网页的 autocomplete / type；输入类型；控件 ID、提示文字、网页 name / id 里的关键词）。认出密码框但没认出账号框时，取密码框前面最近的文本框。跳过搜索框、验证码框、金匮自己。
 2. 只给系统一个需要验证的提示“用金匮填充（· 域名）”，同时带上 SaveInfo（有密码框时），以便登录后提示保存。服务本身不解密、拿不到任何密码。
-3. 用户点提示，系统打开 `AutofillActivity`（独立任务、不进最近任务、每次都要重新解锁），并把页面结构放进 Intent；窗口自己重新解析，所以进程被回收过也能用。
+3. 用户点提示，系统打开 `AutofillActivity`（独立任务、不进最近任务、每次都要重新解锁）。服务把认出的账号框、密码框的 `AutofillId` 和包名、域名直接放进 Intent（1.0.4 起，“随请求”）：交回系统的 Dataset 必须用这次请求里原样的 ID，重新解析出来的 ID 在 Chrome、部分 app 里对不上，系统会静默丢掉，表现为“选了账号却没填进去”。Intent 里没有这些 ID 时（旧版本发出的请求），再退回解析系统放进来的页面结构。
 4. 窗口里先解锁（自动弹指纹），列出推荐和全部条目（`core/autofill.ts`）：
    - 网页按域名：条目网址的主机名相同 3 分，同属一个主域名（`login.taobao.com` 和 `taobao.com`，`.com.cn` 等两段式后缀取三段）2 分；
    - app 按包名：条目 `apps` 里有这个包名 3 分；包名里的词（≥4 个字母、去掉 com / android 等）和条目网址的主域名、标题对得上 1 分。网页请求不按浏览器的包名猜。
@@ -261,12 +263,22 @@ devices/<设备ID>.age  这台设备的完整保险库，加密给保险库公�
 - 解锁后明文只在内存里；上锁时清掉。自动上锁可选：立即（1.0.2 起默认，1.0.1 的设置升级时也改成立即）/ 30 秒 / 1 分钟 / 5 分钟 / 15 分钟。
   - “立即”：回到桌面或切到别的 app 就当作退出，先把没上传的修改传完，再上锁、清掉内存里的明文。再打开时还停在原来的页面，但要先解锁。
   - 其他时长：离开超过这个时间，回来时上锁。
-  - 调起系统分享、选文件、开启指纹时弹出的指纹框、安装更新时不算离开（部分手机弹系统界面时 app 会收到“切到后台”）。
+  - 调起系统分享、选文件、打开系统设置弹窗、安装更新时不算离开（部分手机弹系统界面时 app 会收到“切到后台”）：调起前 `expectExternal()` 设一个标记，**下一次切后台**才用掉它，回到前台就作废，最多 2 分钟自动过期。1.0.3 及以前靠网页的 focus 事件清标记，安卓 WebView 不一定发这个事件，标记卡住后就再也不上锁了。
+  - 指纹框弹出时（`app.bioPrompting`）引起的切后台、回前台也不算离开，否则验证指纹本身就会把刚解开的锁上。
+  - 锁屏页只在 app 处于前台时自动弹指纹（`app.active`）：在后台上锁时不弹（系统会立刻取消，回来就看不到指纹框了），等回到前台（`foregroundTick` 加一）再弹。
 - 复制密码（`SecureClipboardPlugin.java`）：标记为敏感内容（安卓 13 起不在剪贴板预览里显示），默认 30 秒后清空——如果剪贴板里还是我们复制的内容。app 被冻结、定时器没跑时，回到前台补清一次。
 - 防止截屏（`FLAG_SECURE`）：默认开启，`MainActivity` 启动时就打开（网页加载前也受保护）；设置里可以关（`PrivacyScreenPlugin.java`），关闭后可以截屏，最近任务里也会显示金匮的画面。
 - 关闭系统备份：`android:allowBackup="false"` 和 `dataExtractionRules`。
 - 日志、错误信息里不出现任何条目内容、主密码、密钥。
 - 忘记主密码：锁屏页说明办法；只能“抹掉本机数据”重来（输入“抹掉”确认）。
+
+### 6.5 诊断记录（1.0.4 起）
+
+真机上的前后台切换、自动填充回传不好复现，所以记下每一步，用户在“设置 → 诊断记录”复制后反馈。
+
+- 主界面（`src/diag.ts`）：切后台 / 回前台、是否算离开、上锁原因、解锁方式和失败原因。存在 Preferences，最多 120 行。
+- 自动填充（`AutofillLog.java`，SharedPreferences，最多 80 行）：服务收到的填充 / 保存请求（包名、域名、认出了哪些框）、窗口打开时是否“等待结果”（`getCallingActivity()`）、ID 来自请求还是重新解析、交回的结果、窗口没给结果就关掉。自动填充窗口里的网页步骤经 `AutofillPlugin.log` 也写到这里。
+- 只记事件、app 包名、网址域名；**不记账号、密码、条目标题或任何内容**。
 
 ## 7. 云端后端
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /** 锁屏：主密码或指纹解锁。打开时如果开了指纹，自动弹出指纹框 */
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
-import { app, unlockWithBio, unlockWithPassword, wipeDevice } from '../../store'
+import { app, setBioPrompting, unlockWithBio, unlockWithPassword, wipeDevice } from '../../store'
+import { diag } from '../../diag'
 import { prefs } from '../../prefs'
 import { FormatTooNewError } from '../../core/vault'
 import { ask, promptText } from '../dialog'
@@ -35,16 +36,24 @@ async function withBio() {
   if (busy.value) return
   error.value = ''
   busy.value = true
+  setBioPrompting(true)
   try {
     await unlockWithBio()
   } catch (e) {
     const code = (e as { code?: string }).code
+    diag(`指纹解锁没有成功（${code ?? '错误'}）`)
     if (code !== 'CANCELLED') error.value = (e as Error).message
     await nextTick()
     input.value?.focus()
   } finally {
+    setBioPrompting(false)
     busy.value = false
   }
+}
+
+/** 自动弹指纹框：只在前台时弹（在后台弹出来会被系统取消，回来时就没有了） */
+function autoBio() {
+  if (prefs.bioData && app.bio.available && app.active && !busy.value) void withBio()
 }
 
 async function forgot() {
@@ -62,9 +71,11 @@ async function forgot() {
 }
 
 onMounted(() => {
-  if (prefs.bioData && app.bio.available) void withBio()
+  if (prefs.bioData && app.bio.available) autoBio()
   else input.value?.focus()
 })
+// 锁屏状态下回到前台：再弹一次（锁屏可能是在后台出现的）
+watch(() => app.foregroundTick, autoBio)
 </script>
 
 <template>

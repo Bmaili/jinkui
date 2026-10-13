@@ -14,6 +14,7 @@ export const router = createRouter({
     { path: '/settings/password', component: () => import('./views/PasswordView.vue') },
     { path: '/settings/about', component: () => import('./views/AboutView.vue') },
     { path: '/settings/autofill', component: () => import('./views/AutofillView.vue') },
+    { path: '/settings/diagnostics', component: () => import('./views/DiagnosticsView.vue') },
     { path: '/:rest(.*)', redirect: '/' },
   ],
   scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },

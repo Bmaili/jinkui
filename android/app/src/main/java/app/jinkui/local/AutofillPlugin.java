@@ -14,7 +14,10 @@ import android.service.autofill.Dataset;
 import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
 import android.widget.RemoteViews;
+import app.jinkui.local.autofill.AutofillLog;
 import app.jinkui.local.autofill.FieldParser;
+import android.view.autofill.AutofillId;
+import com.getcapacitor.JSArray;
 import app.jinkui.local.autofill.JinkuiAutofillService;
 import app.jinkui.local.autofill.PendingSaves;
 import com.getcapacitor.JSObject;
@@ -40,6 +43,8 @@ public class AutofillPlugin extends Plugin {
     private FieldParser.Result fillTarget;
     private PendingSaves.Save save;
     private boolean loaded;
+    /** 已经把结果交回系统 */
+    private boolean answered;
 
     @PluginMethod
     public void status(PluginCall call) {
@@ -96,10 +101,27 @@ public class AutofillPlugin extends Plugin {
         Intent i = a.getIntent();
         String mode = i.getStringExtra(JinkuiAutofillService.EXTRA_MODE);
         if ("fill".equals(mode)) {
-            AssistStructure s = i.getParcelableExtra(AutofillManager.EXTRA_ASSIST_STRUCTURE);
-            if (s != null) fillTarget = FieldParser.parse(s);
+            // 优先用填充请求时认出的输入框（和系统这次会话里的标识一致）；没有时才重新解析页面
+            AutofillId u = i.getParcelableExtra(JinkuiAutofillService.EXTRA_USERNAME_ID);
+            AutofillId p = i.getParcelableExtra(JinkuiAutofillService.EXTRA_PASSWORD_ID);
+            String source;
+            if (u != null || p != null) {
+                fillTarget = new FieldParser.Result();
+                fillTarget.usernameId = u;
+                fillTarget.passwordId = p;
+                fillTarget.packageName = i.getStringExtra(JinkuiAutofillService.EXTRA_PACKAGE);
+                fillTarget.webDomain = i.getStringExtra(JinkuiAutofillService.EXTRA_DOMAIN);
+                source = "随请求";
+            } else {
+                AssistStructure s = i.getParcelableExtra(AutofillManager.EXTRA_ASSIST_STRUCTURE);
+                fillTarget = s != null ? FieldParser.parse(s) : null;
+                source = s != null ? "重新解析页面" : "没有页面结构";
+            }
+            AutofillLog.add(getContext(), "填充窗口打开（输入框来源：" + source + "；等待结果：" + (a.getCallingActivity() != null ? "是" : "否") + "）"
+                + (fillTarget != null ? " " + AutofillLog.describe(fillTarget) : ""));
         } else if ("save".equals(mode)) {
             save = PendingSaves.take(i.getStringExtra(JinkuiAutofillService.EXTRA_TOKEN));
+            AutofillLog.add(getContext(), "保存窗口打开" + (save == null ? "（内容已过期，app 进程可能被回收过）" : ""));
         }
     }
 
@@ -146,6 +168,7 @@ public class AutofillPlugin extends Plugin {
     public void fill(final PluginCall call) {
         readRequest();
         if (fillTarget == null || fillTarget.isEmpty()) {
+            AutofillLog.add(getContext(), "交回结果失败：没有要填充的输入框");
             call.reject("没有要填充的输入框");
             return;
         }
@@ -164,17 +187,54 @@ public class AutofillPlugin extends Plugin {
             any = true;
         }
         if (!any) {
+            AutofillLog.add(getContext(), "交回结果失败：这一条没有可以填的内容");
             call.reject("这一条没有可以填的内容");
             return;
         }
+        final boolean filledUser = fillTarget.usernameId != null && username != null;
+        final boolean filledPass = fillTarget.passwordId != null && password != null;
         final Dataset dataset = b.build();
         final Activity a = getActivity();
         a.runOnUiThread(() -> {
             Intent reply = new Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset);
             a.setResult(Activity.RESULT_OK, reply);
+            answered = true;
+            AutofillLog.add(getContext(), "交回填充结果（账号=" + (filledUser ? "有" : "无") + " 密码=" + (filledPass ? "有" : "无")
+                + "），由系统填入" + (a.getCallingActivity() == null ? "；注意：窗口不是被系统以“等待结果”方式打开的，结果可能交不回去" : ""));
             call.resolve();
             a.finish();
         });
+    }
+
+    @PluginMethod
+    public void diagnostics(PluginCall call) {
+        JSObject ret = new JSObject();
+        JSArray arr = new JSArray();
+        for (String l : AutofillLog.lines(getContext())) arr.put(l);
+        ret.put("lines", arr);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void clearDiagnostics(PluginCall call) {
+        AutofillLog.clear(getContext());
+        call.resolve();
+    }
+
+    /** 网页端的诊断信息也记到同一份记录里（填充窗口的网页环境用完就没了） */
+    @PluginMethod
+    public void log(PluginCall call) {
+        String m = call.getString("message", "");
+        if (m != null && !m.isEmpty()) AutofillLog.add(getContext(), "[网页] " + m);
+        call.resolve();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (fillTarget != null || save != null) {
+            if (!answered) AutofillLog.add(getContext(), "窗口关闭" + (save != null ? "（保存窗口）" : "（没有交回填充结果）"));
+        }
+        super.handleOnDestroy();
     }
 
     @PluginMethod

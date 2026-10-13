@@ -1,0 +1,1 @@
+package org.json; public class JSONArray { private final java.util.List<Object> l = new java.util.ArrayList<>(); public JSONArray put(Object o){ l.add(o); return this; } public int length(){ return l.size(); } }

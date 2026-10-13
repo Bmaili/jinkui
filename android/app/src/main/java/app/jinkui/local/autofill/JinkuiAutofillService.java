@@ -34,6 +34,11 @@ public class JinkuiAutofillService extends AutofillService {
 
     public static final String EXTRA_MODE = "jinkui.autofill.mode";
     public static final String EXTRA_TOKEN = "jinkui.autofill.token";
+    /** 填充请求里认出的输入框，直接交给填充窗口：窗口不再重新解析页面（重新解析时，有的 app / 浏览器给的输入框标识会变，填不回去） */
+    public static final String EXTRA_USERNAME_ID = "jinkui.autofill.usernameId";
+    public static final String EXTRA_PASSWORD_ID = "jinkui.autofill.passwordId";
+    public static final String EXTRA_PACKAGE = "jinkui.autofill.package";
+    public static final String EXTRA_DOMAIN = "jinkui.autofill.domain";
     private static final AtomicInteger REQUEST_CODE = new AtomicInteger(1);
 
     @Override
@@ -41,10 +46,16 @@ public class JinkuiAutofillService extends AutofillService {
         try {
             FieldParser.Result r = parseLatest(request.getFillContexts());
             if (r.isEmpty() || getPackageName().equals(r.packageName)) {
+                if (!getPackageName().equals(r.packageName)) AutofillLog.add(this, "填充请求：没认出账号框或密码框 app=" + r.packageName + (r.webDomain != null ? " 网址=" + r.webDomain : ""));
                 callback.onSuccess(null);
                 return;
             }
+            AutofillLog.add(this, "填充请求 " + AutofillLog.describe(r));
             Intent i = new Intent(this, AutofillActivity.class).putExtra(EXTRA_MODE, "fill");
+            if (r.usernameId != null) i.putExtra(EXTRA_USERNAME_ID, r.usernameId);
+            if (r.passwordId != null) i.putExtra(EXTRA_PASSWORD_ID, r.passwordId);
+            if (r.packageName != null) i.putExtra(EXTRA_PACKAGE, r.packageName);
+            if (r.webDomain != null) i.putExtra(EXTRA_DOMAIN, r.webDomain);
             int flags = PendingIntent.FLAG_CANCEL_CURRENT;
             // 系统要往这个 Intent 里放页面结构，安卓 12 起必须声明为可变
             if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_MUTABLE;
@@ -64,6 +75,7 @@ public class JinkuiAutofillService extends AutofillService {
             callback.onSuccess(b.build());
         } catch (Exception e) {
             // 解析失败不要影响用户正常输入
+            AutofillLog.add(this, "填充请求出错：" + e.getClass().getSimpleName() + " " + e.getMessage());
             callback.onSuccess(null);
         }
     }
@@ -72,6 +84,7 @@ public class JinkuiAutofillService extends AutofillService {
     public void onSaveRequest(SaveRequest request, SaveCallback callback) {
         try {
             FieldParser.Result r = parseLatest(request.getFillContexts());
+            AutofillLog.add(this, "保存请求 " + AutofillLog.describe(r) + " 有密码=" + (r.passwordValue != null && !r.passwordValue.isEmpty()));
             if (r.passwordValue == null || r.passwordValue.isEmpty() || Build.VERSION.SDK_INT < 28) {
                 // 安卓 8 不能从这里打开界面，只能放弃保存
                 callback.onSuccess();
@@ -88,6 +101,7 @@ public class JinkuiAutofillService extends AutofillService {
             IntentSender sender = PendingIntent.getActivity(this, REQUEST_CODE.getAndIncrement(), i, flags).getIntentSender();
             callback.onSuccess(sender);
         } catch (Exception e) {
+            AutofillLog.add(this, "保存请求出错：" + e.getClass().getSimpleName() + " " + e.getMessage());
             callback.onFailure("金匮保存失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }
     }

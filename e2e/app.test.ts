@@ -361,6 +361,87 @@ describe('金匮', () => {
     await a.waitForSelector('text=怎么用')
     await shot(a, 'autofill-guide')
   })
+
+  // ---------- 离开即上锁（1.0.4 修复） ----------
+
+  async function away(p: Page) {
+    await p.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  }
+  async function back(p: Page) {
+    await p.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  }
+
+  it('选过文件之后，下一次离开照样上锁（1.0.3 会一直不锁）', async () => {
+    await a.goto(`${site.url}#/settings`)
+    await a.waitForSelector('text=从 CSV 导入')
+    const chooser = a.waitForEvent('filechooser')
+    await a.click('text=从 CSV 导入')
+    await chooser // 打开了系统的选文件界面，用户什么都没选就回来了
+    await away(a)
+    await back(a)
+    // 从选文件界面回来：不上锁
+    expect(await a.locator('text=已上锁').count()).toBe(0)
+    // 再离开一次：要上锁
+    await away(a)
+    await back(a)
+    await a.waitForSelector('text=已上锁')
+    await a.fill('[aria-label="主密码"]', PASS)
+    await a.click('button:has-text("解锁")')
+    await a.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+  })
+
+  it('指纹：在后台上锁时不弹指纹框，回到前台才弹；指纹框引起的切后台不会又锁上', async () => {
+    // 同一台“手机”上再开一个主界面，装上假的指纹插件（解锁时模拟部分手机“弹指纹框会切到后台”）
+    const p = await a.context().newPage()
+    await p.addInitScript(() => {
+      const w = window as unknown as Record<string, unknown>
+      w.__bioUnlockCalls = 0
+      w.__vaultKeyMock = {
+        status: async () => ({ available: true, reason: 'ok' }),
+        enroll: async (o: { secret: string }) => ({ data: btoa(o.secret) }),
+        unlock: async (o: { data: string }) => {
+          w.__bioUnlockCalls = (w.__bioUnlockCalls as number) + 1
+          Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+          document.dispatchEvent(new Event('visibilitychange'))
+          await new Promise((r) => setTimeout(r, 50))
+          Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+          document.dispatchEvent(new Event('visibilitychange'))
+          return { secret: atob(o.data) }
+        },
+        remove: async () => {},
+      }
+    })
+    await p.goto(`${site.url}#/settings`)
+    await p.waitForSelector('text=已上锁')
+    await p.fill('[aria-label="主密码"]', PASS)
+    await p.click('button:has-text("解锁")')
+    await p.waitForSelector('text=指纹解锁', { timeout: 30000 })
+    await p.click('[aria-label="指纹解锁"]')
+    await p.waitForSelector('text=已开启指纹解锁')
+    // 开启指纹后还在设置页，没有被锁上
+    expect(await p.locator('text=已上锁').count()).toBe(0)
+
+    await away(p)
+    await p.waitForSelector('text=已上锁')
+    await p.waitForTimeout(300)
+    expect(await p.evaluate(() => (window as unknown as { __bioUnlockCalls: number }).__bioUnlockCalls)).toBe(0)
+    await back(p)
+    // 回到前台：自动弹指纹，解开；指纹框引起的那次切后台不算离开，不会又锁上
+    await p.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+    await p.waitForTimeout(500)
+    expect(await p.evaluate(() => (window as unknown as { __bioUnlockCalls: number }).__bioUnlockCalls)).toBe(1)
+    expect(await p.locator('.shell[data-phase="unlocked"]').count()).toBe(1)
+    await p.goto(`${site.url}#/settings/diagnostics`)
+    await p.waitForSelector('text=回到前台')
+    await shot(p, 'diagnostics')
+    await p.close()
+  })
 })
 
 async function waitSyncedAfterEdit(page: Page) {

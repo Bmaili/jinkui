@@ -65,4 +65,8 @@ npm run cap:sync             # 构建并同步到 android/
 | 自动填充窗口（AutofillActivity）和主界面是两个独立的 WebView，内存各是各的 | 本地写入前先合并磁盘上的（`persistVault`），SlotStore 不缓存序号；主界面回到前台时合并磁盘。不要在内存里“以我为准”整个覆盖 |
 | 自动填充的密码不能经过系统进程 | 保存请求的账号密码放在 `PendingSaves`（进程内存），Intent 里只放令牌；填充结果只通过 Dataset 交给系统 |
 | 自动填充窗口要能把结果交回系统 | 它不能是 singleTask（主界面是），独立任务 `taskAffinity=""`；填充的 PendingIntent 在安卓 12 起要 `FLAG_MUTABLE`（系统要往里放页面结构） |
+| 自动填充交回的 Dataset 用了重新解析出来的 AutofillId | 系统会静默丢掉。用服务放进 Intent 的原样 ID（`EXTRA_USERNAME_ID` / `EXTRA_PASSWORD_ID`） |
+| 调起系统界面（选文件、分享、设置弹窗）后靠 focus 事件恢复“离开上锁” | 安卓 WebView 不一定发 focus。用 `expectExternal()`：下一次切后台用掉、回前台作废、会过期 |
+| 在后台弹指纹框 | 系统会立刻取消，回来就没有指纹框。只在 `app.active` 时弹，回前台看 `foregroundTick` |
+| 真机才出现的问题 | 先看“设置 → 诊断记录”（`diag.ts`、`AutofillLog.java`），缺信息就补记录，不记任何秘密 |
 | 原生插件在 `window.__autofillMock` / `__vaultKeyMock` 有假实现 | 端到端测试用它们模拟自动填充窗口和指纹 |

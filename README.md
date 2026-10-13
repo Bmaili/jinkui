@@ -26,6 +26,8 @@
 
 升级：设置 → 关于金匮 → 检查更新，或者在 Releases 下载新版覆盖安装，本机数据不会丢。
 
+遇到问题（例如自动填充选了账号却没填进去）：设置 → 诊断记录 → 复制，贴到 [Issues](https://github.com/Bmaili/jinkui/issues)。里面只有事件、app 包名和网址域名，没有账号密码。
+
 ## 签名（自己打包时）
 
 推送到 `release` 分支（或推送 `v1.0.N` 形式的 tag）时，GitHub Actions 会签名打包并发布到 Releases。需要在仓库 Settings → Secrets and variables → Actions 里添加 4 个 secret：

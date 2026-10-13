@@ -73,8 +73,8 @@ async function rename() {
 }
 
 function chooseCsv() {
-  const done = expectExternal()
-  window.addEventListener('focus', () => setTimeout(done, 1500), { once: true })
+  // 选文件会切到系统界面：这一次离开不上锁（回来后自动作废，见 store.expectExternal）
+  expectExternal()
   fileInput.value?.click()
 }
 
@@ -238,6 +238,11 @@ async function wipe() {
         <button class="row" @click="router.push('/settings/about')">
           <Icon name="info" />
           <span class="grow">关于金匮<span v-if="showBadge" class="dot" aria-label="有新版本" /><span class="sub">版本、检查更新</span></span>
+          <Icon name="right" />
+        </button>
+        <button class="row" @click="router.push('/settings/diagnostics')">
+          <Icon name="list" />
+          <span class="grow">诊断记录<span class="sub">遇到问题时复制下来反馈，不含任何账号密码</span></span>
           <Icon name="right" />
         </button>
       </div>

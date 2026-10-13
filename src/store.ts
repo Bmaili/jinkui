@@ -37,6 +37,7 @@ import { setScreenshotBlocking } from './platform/privacy'
 import { defaultDeviceName, newDeviceId } from './platform/device'
 import { loadPrefs, prefs, resetPrefs, savePrefs } from './prefs'
 import { watch } from 'vue'
+import { diag } from './diag'
 
 export type BackendConfig =
   | { type: 'github'; github: GitHubConfig }
@@ -74,6 +75,12 @@ export const app = reactive({
   /** 刚建立或加入保险库，首页提示开启指纹 */
   offerBio: false,
   toast: '',
+  /** app 在前台（主界面里由前后台事件维护） */
+  active: true,
+  /** 锁屏状态下回到前台的次数：锁屏看到它变了就弹指纹框 */
+  foregroundTick: 0,
+  /** 指纹框正在显示 */
+  bioPrompting: false,
 })
 
 /** 当前保险库（不可变对象，整个替换；shallowRef 避免把上千个条目都变成响应式） */
@@ -181,6 +188,7 @@ async function openWith(k: KeyBundle): Promise<void> {
   engine = new SyncEngine(host)
   hiddenAt = 0
   app.phase = 'unlocked'
+  diag('解锁')
   requestSync(0)
 }
 
@@ -211,6 +219,7 @@ export async function unlockWithBio(): Promise<void> {
 
 export function lock(): void {
   if (app.phase !== 'unlocked') return
+  diag('上锁')
   clearTimeout(syncTimer)
   clearTimeout(retryTimer)
   keys = null
@@ -609,12 +618,12 @@ export async function changeMasterPassword(oldPass: string, newPass: string): Pr
 
 export async function enableBio(): Promise<void> {
   if (!keys) throw new Error('已上锁')
-  // 部分手机弹出指纹框时 app 会收到“切到后台”，这一次不上锁
-  const done = expectExternal()
+  // 部分手机弹出指纹框时 app 会收到“切到后台”，这期间不算离开
+  setBioPrompting(true)
   try {
     prefs.bioData = await bioEnroll(keys.identity)
   } finally {
-    setTimeout(done, 1500)
+    setBioPrompting(false)
   }
   await savePrefs()
 }
@@ -646,22 +655,39 @@ export function backupJson(): Uint8Array {
 // ---------- 前后台 ----------
 
 let hiddenAt = 0
-/** 调起系统界面（分享、安装更新、选文件）时会切到后台，这一次回来不上锁 */
-let external = false
+/**
+ * 调起系统界面（分享、选文件、开启指纹、安装更新、自动填充设置）时 app 会切到后台，这一次回来不上锁。
+ * 记的是到期时间而不是开关：1.0.3 以前用开关，选文件那里靠网页的 focus 事件关掉它，
+ * 安卓 WebView 不一定发这个事件，开关一直开着，之后每次离开都不上锁。现在：
+ * - 只管下一次离开：回到前台时就作废；
+ * - 最多 2 分钟，到点自动作废。
+ */
+let externalUntil = 0
+/** 这一次离开开始时，是不是在调起系统界面或者弹指纹框 */
+let hideWasExternal = false
 
-export function expectExternal(): () => void {
-  external = true
+export function expectExternal(maxMs = 120_000): () => void {
+  const until = Date.now() + maxMs
+  externalUntil = until
+  diag('调起系统界面，下一次离开不上锁')
   return () => {
-    external = false
+    if (externalUntil === until) externalUntil = 0
   }
+}
+
+/** 锁屏、开启指纹时弹出指纹框的期间（部分手机弹指纹框时 app 会收到“切到后台”，不能当成离开） */
+export function setBioPrompting(on: boolean) {
+  app.bioPrompting = on
 }
 
 /**
  * 切到后台（规格 6.4）。自动上锁设为“立即”时，离开就当作退出：先把没上传的修改传完，再上锁、清掉内存里的明文。
- * 调起系统分享、选文件、指纹框、安装更新时不算离开（expectExternal）。
  */
 function onHide() {
-  if (app.phase !== 'unlocked' || external) return
+  app.active = false
+  hideWasExternal = externalUntil > Date.now() || app.bioPrompting
+  diag(`切到后台（${app.phase}${hideWasExternal ? '，调起系统界面 / 指纹框，不算离开' : ''}）`)
+  if (app.phase !== 'unlocked' || hideWasExternal) return
   hiddenAt = Date.now()
   if (prefs.autoLockSec === 0) void lockAfterSync()
   else if (app.sync.pending) void syncNow()
@@ -670,15 +696,29 @@ function onHide() {
 async function lockAfterSync() {
   if (app.sync.pending) await syncNow().catch(() => false)
   // 同步期间用户已经回来了（hiddenAt 被清零）就不锁；回来时 onShow 会按规则处理
-  if (hiddenAt && app.phase === 'unlocked' && !external) lock()
+  if (hiddenAt && app.phase === 'unlocked') {
+    diag('离开即上锁')
+    lock()
+  }
 }
 
 function onShow() {
+  app.active = true
+  const wasExternal = hideWasExternal
+  hideWasExternal = false
+  // 调起系统界面的那一次离开已经过去了：作废，下次离开照常上锁
+  if (wasExternal) externalUntil = 0
+  diag(`回到前台（${app.phase}${wasExternal ? '，从系统界面 / 指纹框回来' : ''}）`)
   void clearIfDue()
-  if (app.phase !== 'unlocked') return
+  if (app.phase !== 'unlocked') {
+    // 锁屏状态下回到前台：通知锁屏弹指纹框（锁屏可能是在后台出现的，那时弹不出来）
+    if (!wasExternal) app.foregroundTick++
+    return
+  }
   const away = Date.now() - hiddenAt
-  if (hiddenAt && !external && away >= prefs.autoLockSec * 1000) {
+  if (hiddenAt && away >= prefs.autoLockSec * 1000) {
     hiddenAt = 0
+    diag('离开超过设定时间，上锁')
     lock()
     return
   }

@@ -30,6 +30,9 @@ interface AutofillPlugin {
   getRequest(): Promise<AutofillRequest>
   fill(o: { username?: string; password?: string }): Promise<void>
   close(): Promise<void>
+  diagnostics(): Promise<{ lines: string[] }>
+  clearDiagnostics(): Promise<void>
+  log(o: { message: string }): Promise<void>
 }
 
 const Native = registerPlugin<AutofillPlugin>('Autofill')
@@ -71,5 +74,22 @@ export const autofill = {
   fill: (o: { username?: string; password?: string }) => impl()!.fill(o),
   close: async () => {
     await impl()?.close().catch(() => {})
+  },
+  /** 原生端的自动填充诊断记录（规格 6.5） */
+  async diagnostics(): Promise<string[]> {
+    try {
+      return (await impl()?.diagnostics())?.lines ?? []
+    } catch {
+      return []
+    }
+  },
+  clearDiagnostics: async () => {
+    await impl()?.clearDiagnostics().catch(() => {})
+  },
+  /** 填充窗口的网页环境用完就没了：诊断信息记到原生端。不要传账号、密码、条目内容 */
+  log(message: string): void {
+    try {
+      void impl()?.log?.({ message })?.catch(() => {})
+    } catch { /* 记不了就算了 */ }
   },
 }

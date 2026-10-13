@@ -104,6 +104,7 @@ onBeforeUnmount(() => void resumeHandle?.remove())
       <div class="note-box">
         <p>部分银行、支付类 app 禁止自动填充；有的 app 输入框是自己画的，系统认不出来；华为的纯血鸿蒙不支持这套机制。</p>
         <p>这时打开金匮，在条目详情里点<b>复制密码并返回</b>：复制后自动回到原来的 app，粘贴即可，30 秒后剪贴板自动清空。</p>
+        <p>如果出现了“用金匮填充”、选了账号却没有填进去，请到<button class="link" @click="router.push('/settings/diagnostics')">诊断记录</button>点“复制”发给开发者。</p>
       </div>
     </div>
   </div>
@@ -113,4 +114,5 @@ onBeforeUnmount(() => void resumeHandle?.remove())
 .status .row svg.on { color: var(--ok); }
 .stop { display: block; margin: 0 auto; }
 .note-box b { font-weight: 700; }
+.link { border: 0; background: none; padding: 0 2px; color: var(--accent); font: inherit; text-decoration: underline; }
 </style>

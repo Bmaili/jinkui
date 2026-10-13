@@ -1,5 +1,6 @@
 <script setup lang="ts">
 /** 关于：版本、检查更新（应用内下载，核对 sha256 和签名后调起系统安装）、代码仓库 */
+import Logo from '../components/Logo.vue'
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
@@ -40,7 +41,7 @@ function later() {
     </header>
     <div class="page">
       <div class="hero">
-        <span class="seal big">匮</span>
+        <Logo :size="80" />
         <div class="name">{{ APP_NAME }}</div>
         <p class="muted">版本 <span class="mono">{{ currentVersion }}</span></p>
       </div>
@@ -93,7 +94,6 @@ function later() {
 
 <style scoped>
 .hero { display: flex; flex-direction: column; align-items: center; padding: 16px 0 8px; }
-.seal.big { width: 72px; height: 72px; font-size: 36px; border-radius: 16px; }
 .name { margin-top: 12px; font-size: 24px; font-weight: 800; letter-spacing: 0.3em; text-indent: 0.3em; }
 .hero p { margin: 4px 0 0; }
 .dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--danger); vertical-align: 2px; }

@@ -8,7 +8,22 @@
  * - 每次写入是一个 commit。数据仓库必须是私有的，公开的直接拒绝。
  */
 import { toBase64 } from '../bytes'
+import type { HttpRequest, HttpResponse } from '../http'
 import { call, RemoteConflictError, RemoteError, type PutOpts, type RemoteFile, type RemoteStore } from './remote'
+
+/**
+ * GitHub 在带有效期的 Token 的每个响应里给出过期时间，例如 `2026-11-05 00:00:00 UTC` 或 `2026-11-05 00:00:00 +0800`。
+ * 解析成毫秒时间戳，认不出返回 0。
+ */
+export function parseTokenExpiry(v: string | undefined): number {
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\s*(UTC|GMT|Z|[+-]\d{2}:?\d{2})?\s*$/i.exec((v ?? '').trim())
+  if (!m) return 0
+  let tz = (m[3] ?? 'Z').toUpperCase()
+  if (tz === 'UTC' || tz === 'GMT') tz = 'Z'
+  else if (tz !== 'Z' && !tz.includes(':')) tz = `${tz.slice(0, 3)}:${tz.slice(3)}`
+  const t = Date.parse(`${m[1]}T${m[2]}${tz}`)
+  return Number.isFinite(t) ? t : 0
+}
 
 export interface GitHubConfig {
   owner: string
@@ -32,6 +47,8 @@ export class GitHubStore implements RemoteStore {
   private prefix: string
   /** 最近一次列表里各文件的 sha，写入时没给 ifVersion 就用它 */
   private known = new Map<string, string>()
+  /** Token 的过期时间（毫秒），没有有效期或还不知道时为 0。每个响应都会更新 */
+  credentialExpiry = 0
 
   constructor(private cfg: GitHubConfig) {
     this.base = (cfg.apiBase || 'https://api.github.com').replace(/\/+$/, '')
@@ -60,6 +77,14 @@ export class GitHubStore implements RemoteStore {
     }
   }
 
+  /** 发请求，顺便记下 Token 的过期时间 */
+  private async req(r: HttpRequest): Promise<HttpResponse> {
+    const res = await call(r)
+    const exp = parseTokenExpiry(res.headers?.['github-authentication-token-expiration'])
+    if (exp) this.credentialExpiry = exp
+    return res
+  }
+
   private fail(status: number, body: string): never {
     let msg = ''
     try {
@@ -74,7 +99,7 @@ export class GitHubStore implements RemoteStore {
   }
 
   private async json<T>(method: string, url: string, body?: unknown, ok: number[] = []): Promise<{ status: number; data: T }> {
-    const res = await call({ url, method, headers: this.headers(undefined, !!body), body: body ? JSON.stringify(body) : undefined })
+    const res = await this.req({ url, method, headers: this.headers(undefined, !!body), body: body ? JSON.stringify(body) : undefined })
     if (!res.ok && !ok.includes(res.status)) this.fail(res.status, res.text())
     const text = res.text()
     return { status: res.status, data: (text ? JSON.parse(text) : null) as T }
@@ -110,7 +135,7 @@ export class GitHubStore implements RemoteStore {
   }
 
   async get(path: string): Promise<Uint8Array | null> {
-    const res = await call({
+    const res = await this.req({
       url: `${this.contentsUrl(path)}?ref=${encodeURIComponent(this.branch)}`,
       headers: this.headers('application/vnd.github.raw+json'),
       responseType: 'bytes',
@@ -123,7 +148,7 @@ export class GitHubStore implements RemoteStore {
 
   async put(path: string, bytes: Uint8Array, opts: PutOpts = {}): Promise<string> {
     const sha = opts.ifVersion === undefined ? this.known.get(path) : opts.ifVersion ?? undefined
-    const res = await call({
+    const res = await this.req({
       url: this.contentsUrl(path),
       method: 'PUT',
       headers: this.headers(undefined, true),
@@ -145,7 +170,7 @@ export class GitHubStore implements RemoteStore {
       sha = this.known.get(path)
       if (!sha) return
     }
-    const res = await call({
+    const res = await this.req({
       url: this.contentsUrl(path),
       method: 'DELETE',
       headers: this.headers(undefined, true),

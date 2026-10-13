@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 同步设置：状态、立即同步、后端配置、设备列表 */
 import { computed, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import BackendForm from '../components/BackendForm.vue'
 import SyncBanner from '../components/SyncBanner.vue'
@@ -12,7 +12,9 @@ import { ask } from '../dialog'
 import { timeAgo } from '../format'
 
 const router = useRouter()
-const editing = ref(!app.backend)
+const route = useRoute()
+// 首页提示“更新 Token”时带着 ?edit=1 过来，直接打开修改配置
+const editing = ref(!app.backend || route.query.edit === '1')
 const draft = reactive(draftFrom(app.backend))
 const busy = ref('')
 const error = ref('')
@@ -76,7 +78,7 @@ async function remove(id: string, name: string) {
       <h1>同步与设备</h1>
     </header>
     <div class="page">
-      <SyncBanner />
+      <SyncBanner here :editing="editing" @edit="editing = true" />
 
       <template v-if="app.backend && !editing">
         <div class="group">
@@ -86,6 +88,7 @@ async function remove(id: string, name: string) {
               <span class="sub">
                 <template v-if="app.sync.running">正在同步…</template>
                 <template v-else>上次同步：{{ timeAgo(app.sync.last) }}{{ app.sync.pending ? ' · 有修改未上传' : '' }}</template>
+                <template v-if="app.sync.tokenExpires"><br />Token 有效期到 {{ new Date(app.sync.tokenExpires).toLocaleDateString('zh-CN') }}</template>
               </span>
             </span>
           </div>

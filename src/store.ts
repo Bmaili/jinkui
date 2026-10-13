@@ -70,6 +70,8 @@ export const app = reactive({
     pending: false,
     devices: [] as DeviceInfo[],
     problems: [] as SyncProblem[],
+    /** GitHub Token 的过期时间（毫秒），0 表示不会过期或还不知道。快到期时首页提醒 */
+    tokenExpires: 0,
   },
   bio: { available: false, reason: 'web' as BioStatus['reason'] },
   /** 刚建立或加入保险库，首页提示开启指纹 */
@@ -152,8 +154,8 @@ async function persistConfig(): Promise<void> {
 // ---------- 启动、解锁、上锁 ----------
 
 /**
- * 启动。mode 为 'autofill' 时是自动填充窗口（AutofillActivity）：不装前后台的自动上锁逻辑，
- * 窗口用完就关，每次打开都要重新解锁。
+ * 启动。mode 为 'autofill' 时是自动填充窗口（AutofillActivity）：窗口用完就关，每次打开都要重新解锁；
+ * 解锁后切走（不管自动上锁设的多久）立即上锁，不会把解开的保险库留在后台。
  */
 export async function init(mode: 'main' | 'autofill' = 'main'): Promise<void> {
   await loadPrefs()
@@ -161,7 +163,7 @@ export async function init(mode: 'main' | 'autofill' = 'main'): Promise<void> {
   const id = await files.read('identity')
   app.phase = id && prefs.recipient ? 'locked' : 'setup'
   watch(() => prefs.blockScreenshots, (on) => void setScreenshotBlocking(on), { immediate: true })
-  if (mode === 'main') installLifecycle()
+  installLifecycle(mode)
 }
 
 async function openWith(k: KeyBundle): Promise<void> {
@@ -228,6 +230,33 @@ export function lock(): void {
   engine = null
   vault.value = emptyVault()
   app.phase = 'locked'
+}
+
+// ---------- 上锁时没保存的编辑 ----------
+
+/**
+ * 编辑到一半切走、被上锁了：表单加密给保险库公钥（加密不需要私钥，上锁后也能做）放在内存里，
+ * 解锁回到同一个编辑页时解开恢复。只在内存里，app 被系统杀掉就没了。
+ */
+let draftStash: { key: string; data: Uint8Array } | null = null
+
+export async function stashDraft(key: string, value: unknown): Promise<void> {
+  draftStash = null
+  if (!prefs.recipient) return
+  const data = await new VaultCipher({ identity: '', recipient: prefs.recipient }).encryptJson(value)
+  draftStash = { key, data }
+}
+
+/** 取回 key 对应的草稿（取一次就删）；没有、或者解不开时返回 null */
+export async function takeDraft<T>(key: string): Promise<T | null> {
+  const s = draftStash
+  if (!s || s.key !== key || !cipher) return null
+  draftStash = null
+  try {
+    return await cipher.decryptJson<T>(s.data)
+  } catch {
+    return null
+  }
 }
 
 // ---------- 建立与加入 ----------
@@ -434,6 +463,8 @@ const host: SyncHost = {
   },
   current: () => vault.value,
   async merge(remote) {
+    // 同步进行到一半时上锁了：不能再把云端解开的条目放回内存
+    if (!cipher) throw new Error('已上锁')
     vault.value = gcTombstones(mergeVaults(vault.value, remote))
     await persistVault()
   },
@@ -468,13 +499,30 @@ function classify(e: unknown): SyncErrorKind {
   return 'other'
 }
 
-/** 立即同步。返回是否成功 */
+/** 正在进行的同步 */
+let inflight: Promise<boolean> | null = null
+
+/**
+ * 立即同步，返回是否成功。已经在同步时等它结束；那一轮开始后又有新的修改，就接着再同步一次
+ * （以前直接返回“成功”，自动填充窗口关闭前、离开即上锁前的那次同步可能漏掉最新的修改）。
+ */
 export async function syncNow(): Promise<boolean> {
+  if (inflight) {
+    const ok = await inflight
+    if (!ok || !app.sync.pending) return ok
+  }
   if (app.phase !== 'unlocked' || !app.backend || !engine) return false
-  if (app.sync.running) return true
+  // 等待的几个调用者里，第一个已经开始了新的一轮
+  if (inflight) return inflight
+  inflight = runSync().finally(() => (inflight = null))
+  return inflight
+}
+
+async function runSync(): Promise<boolean> {
   clearTimeout(syncTimer)
   clearTimeout(retryTimer)
-  const backend = app.backend
+  const backend = app.backend!
+  const eng = engine!
   const seq = editSeq
   app.sync.running = true
   try {
@@ -482,14 +530,16 @@ export async function syncNow(): Promise<boolean> {
     if (prefs.keyUploadPending && keys) {
       await uploadWrappedKey(remote, keys)
       prefs.keyUploadPending = false
+      await savePrefs()
     }
-    const r = await engine.sync(remote)
-    if (app.backend !== backend) return false
+    const r = await eng.sync(remote)
+    if (app.backend !== backend || engine !== eng) return false
     app.sync.problems = r.problems
     app.sync.devices = Object.values(syncState?.devices ?? {})
     app.sync.last = Date.now()
     app.sync.error = ''
     app.sync.errorKind = ''
+    app.sync.tokenExpires = remote.credentialExpiry ?? 0
     if (editSeq === seq && app.sync.pending) {
       app.sync.pending = false
       await persistVault()
@@ -497,7 +547,8 @@ export async function syncNow(): Promise<boolean> {
     retries = 0
     return true
   } catch (e) {
-    if (app.phase !== 'unlocked') return false
+    // 上锁了、或者同步期间换了后端：这一轮的结果作废，不算出错
+    if (app.phase !== 'unlocked' || app.backend !== backend || engine !== eng) return false
     const kind = classify(e)
     app.sync.errorKind = kind
     app.sync.error = (e as Error).message
@@ -538,6 +589,7 @@ export async function setBackend(cfg: BackendConfig | null): Promise<void> {
   app.sync.problems = []
   app.sync.error = ''
   app.sync.errorKind = ''
+  app.sync.tokenExpires = 0
   app.sync.pending = !!cfg
   await persistConfig()
   await persistVault()
@@ -637,6 +689,7 @@ export async function disableBio(): Promise<void> {
 /** 抹掉本机的全部数据（云端不动）。之后回到“建立或加入” */
 export async function wipeDevice(): Promise<void> {
   lock()
+  draftStash = null
   await bioRemove()
   await wipeLocal()
   await resetPrefs()
@@ -686,15 +739,20 @@ export function setBioPrompting(on: boolean) {
 function onHide() {
   app.active = false
   hideWasExternal = externalUntil > Date.now() || app.bioPrompting
-  diag(`切到后台（${app.phase}${hideWasExternal ? '，调起系统界面 / 指纹框，不算离开' : ''}）`)
+  if (lifecycleMode === 'main') diag(`切到后台（${app.phase}${hideWasExternal ? '，调起系统界面 / 指纹框，不算离开' : ''}）`)
   if (app.phase !== 'unlocked' || hideWasExternal) return
   hiddenAt = Date.now()
-  if (prefs.autoLockSec === 0) void lockAfterSync()
+  if (lockDelayMs() === 0) void lockAfterSync()
   else if (app.sync.pending) void syncNow()
 }
 
+/** 离开即上锁前，最多等多久把修改传完（网络很慢时不能一直不锁；没传完的已经记在本地，下次解锁后补传） */
+const LOCK_SYNC_WAIT_MS = 8000
+
 async function lockAfterSync() {
-  if (app.sync.pending) await syncNow().catch(() => false)
+  if (app.sync.pending || inflight) {
+    await Promise.race([syncNow().catch(() => false), new Promise((r) => setTimeout(r, LOCK_SYNC_WAIT_MS))])
+  }
   // 同步期间用户已经回来了（hiddenAt 被清零）就不锁；回来时 onShow 会按规则处理
   if (hiddenAt && app.phase === 'unlocked') {
     diag('离开即上锁')
@@ -708,7 +766,7 @@ function onShow() {
   hideWasExternal = false
   // 调起系统界面的那一次离开已经过去了：作废，下次离开照常上锁
   if (wasExternal) externalUntil = 0
-  diag(`回到前台（${app.phase}${wasExternal ? '，从系统界面 / 指纹框回来' : ''}）`)
+  if (lifecycleMode === 'main') diag(`回到前台（${app.phase}${wasExternal ? '，从系统界面 / 指纹框回来' : ''}）`)
   void clearIfDue()
   if (app.phase !== 'unlocked') {
     // 锁屏状态下回到前台：通知锁屏弹指纹框（锁屏可能是在后台出现的，那时弹不出来）
@@ -716,7 +774,7 @@ function onShow() {
     return
   }
   const away = Date.now() - hiddenAt
-  if (hiddenAt && away >= prefs.autoLockSec * 1000) {
+  if (hiddenAt && away >= lockDelayMs()) {
     hiddenAt = 0
     diag('离开超过设定时间，上锁')
     lock()
@@ -724,13 +782,16 @@ function onShow() {
   }
   hiddenAt = 0
   // 离开期间自动填充窗口可能保存过条目
-  void mergeFromDisk().then(() => requestSync(0))
+  if (lifecycleMode === 'main') void mergeFromDisk().then(() => requestSync(0))
 }
 
-let lifecycle = false
-function installLifecycle() {
-  if (lifecycle) return
-  lifecycle = true
+/** 离开多久后上锁：自动填充窗口总是立即 */
+const lockDelayMs = () => (lifecycleMode === 'autofill' ? 0 : prefs.autoLockSec * 1000)
+
+let lifecycleMode: 'main' | 'autofill' | '' = ''
+function installLifecycle(mode: 'main' | 'autofill') {
+  if (lifecycleMode) return
+  lifecycleMode = mode
   if (Capacitor.isNativePlatform()) {
     void CapApp.addListener('pause', onHide)
     void CapApp.addListener('resume', onShow)

@@ -43,6 +43,8 @@ export interface RemoteStore {
   remove(path: string): Promise<void>
   /** 检查配置：能否访问、权限够不够。不写任何文件 */
   test?(): Promise<void>
+  /** 凭据（GitHub Token）的过期时间，毫秒；不会过期或不知道时为 0 或不提供 */
+  readonly credentialExpiry?: number
 }
 
 export class RemoteError extends Error {

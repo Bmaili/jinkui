@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /** 新建或编辑条目。没提到的字段（包括新版本加的未知字段）保持原样 */
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import Switch from '../components/Switch.vue'
 import GeneratorSheet from '../components/GeneratorSheet.vue'
-import { addFolder, addItem, saveItem, toast, vault } from '../../store'
+import { addFolder, addItem, app, saveItem, stashDraft, takeDraft, toast, vault } from '../../store'
 import { checkFolderName, folderOf, liveFolders } from '../../core/folders'
 import type { CustomField, ItemContent } from '../../core/item'
 import { estimateBits, strengthLabel } from '../../core/generator'
@@ -120,6 +120,19 @@ function useGenerated(p: string) {
   showPw.value = true
   gen.value = false
 }
+
+// 编辑到一半被上锁（切到别的 app 复制验证码、查资料……）：先加密收起来，解锁回来后恢复，不白填
+const draftKey = route.fullPath
+onBeforeUnmount(() => {
+  if (!leaving && dirty.value && app.phase !== 'unlocked') void stashDraft(draftKey, { form: { ...form }, showPw: showPw.value })
+})
+onMounted(async () => {
+  const d = await takeDraft<{ form: Form; showPw: boolean }>(draftKey)
+  if (!d) return
+  Object.assign(form, d.form)
+  showPw.value = d.showPw
+  toast('已恢复上锁前没保存的修改')
+})
 
 onBeforeRouteLeave(async () => {
   if (leaving || !dirty.value) return true

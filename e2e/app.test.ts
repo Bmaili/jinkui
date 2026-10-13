@@ -442,6 +442,77 @@ describe('金匮', () => {
     await shot(p, 'diagnostics')
     await p.close()
   })
+
+  // ---------- 1.0.6 ----------
+
+  async function unlockMain(p: Page) {
+    await p.waitForSelector('text=已上锁')
+    await p.fill('[aria-label="主密码"]', PASS)
+    await p.click('button:has-text("解锁")')
+    await p.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+  }
+
+  it('编辑到一半被上锁：解锁回来后恢复没保存的修改', async () => {
+    await a.goto(`${site.url}#/edit`)
+    await a.fill('#e-title', '还没保存的条目')
+    await a.fill('#e-user', 'draft@example.com')
+    await away(a)
+    await back(a)
+    await shot(a, 'lock')
+    await unlockMain(a)
+    await a.waitForSelector('text=已恢复上锁前没保存的修改')
+    expect(await a.inputValue('#e-title')).toBe('还没保存的条目')
+    expect(await a.inputValue('#e-user')).toBe('draft@example.com')
+    // 只恢复一次：放弃后再进来就是空的
+    await a.goto(`${site.url}#/`)
+    await a.click('.dlg .btns >> text=放弃')
+    await a.waitForSelector('.search')
+    await a.goto(`${site.url}#/edit`)
+    await a.waitForSelector('#e-title')
+    expect(await a.inputValue('#e-title')).toBe('')
+    await a.goto(`${site.url}#/`)
+  })
+
+  it('自动填充窗口解锁后切走：不管自动上锁设了多久，都立即上锁', async () => {
+    await a.goto(`${site.url}#/settings`)
+    await a.click('text=自动上锁')
+    await a.waitForSelector('.val:text-is("30 秒")')
+    const p = await autofillWindow({ mode: 'fill', packageName: 'com.android.chrome', appLabel: 'Chrome', webDomain: 'github.com', hasUsername: true, hasPassword: true })
+    await unlockIn(p)
+    await away(p)
+    await back(p)
+    await p.waitForSelector('text=已上锁')
+    await p.close()
+    // 改回“立即”
+    for (let i = 0; i < 4; i++) await a.click('text=自动上锁')
+    await a.waitForSelector('.val:text-is("立即")')
+  })
+
+  it('GitHub Token 快过期时，首页和同步设置里提醒', async () => {
+    gh.tokenExpiry = new Date(Date.now() + 5 * 86_400_000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+    try {
+      for (const [p, name] of [[a, 'home-token'], [b, 'home-token-dark']] as const) {
+        await p.goto(`${site.url}#/`)
+        if (await p.locator('text=已上锁').count()) await unlockMain(p)
+        await p.waitForSelector('.search')
+        await p.locator('.topbar .icon-btn').first().click()
+        await p.waitForSelector('text=GitHub Token 还有 5 天', { timeout: 30000 })
+        await shot(p, name)
+      }
+      await a.click('.note-box >> text=更新 Token')
+      await a.waitForSelector('#gh-token')
+      await shot(a, 'sync-token')
+    } finally {
+      gh.tokenExpiry = ''
+    }
+    // 换了不会过期的 Token（这里是同一个，响应里没有过期时间了）：保存后提醒消失
+    await a.click('.actions .solid-btn')
+    await a.waitForSelector('text=立即同步', { timeout: 30000 })
+    expect(await a.locator('text=Token 有效期到').count()).toBe(0)
+    await a.goto(`${site.url}#/`)
+    await waitSynced(a)
+    expect(await a.locator('text=GitHub Token 还有').count()).toBe(0)
+  })
 })
 
 async function waitSyncedAfterEdit(page: Page) {

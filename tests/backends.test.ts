@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { utf8 } from '../src/core/bytes'
 import { createKeys, devicePath, type KeyBundle } from '../src/core/crypto'
-import { GitHubStore } from '../src/core/sync/github'
+import { GitHubStore, parseTokenExpiry } from '../src/core/sync/github'
 import { OssStore } from '../src/core/sync/oss'
 import { RemoteConflictError, type RemoteStore } from '../src/core/sync/remote'
 import { initRemote, joinRemote, probeRemote } from '../src/core/sync/setup'
@@ -131,6 +131,30 @@ describe('GitHub', () => {
   it('服务器出错时报可重试的错误', async () => {
     gh.failNext(1)
     await expect(ghStore().list()).rejects.toMatchObject({ status: 502, retryable: true })
+  })
+
+  it('从响应头记下 Token 的过期时间', async () => {
+    const r = ghStore()
+    await r.list()
+    expect(r.credentialExpiry).toBe(0)
+    gh.tokenExpiry = '2026-11-05 00:00:00 UTC'
+    try {
+      await r.list()
+      expect(r.credentialExpiry).toBe(Date.UTC(2026, 10, 5))
+    } finally {
+      gh.tokenExpiry = ''
+    }
+  })
+
+  it('解析各种写法的过期时间', () => {
+    expect(parseTokenExpiry('2026-11-05 00:00:00 UTC')).toBe(Date.UTC(2026, 10, 5))
+    expect(parseTokenExpiry('2026-11-05 08:00:00 +0800')).toBe(Date.UTC(2026, 10, 5))
+    expect(parseTokenExpiry('2026-11-05 08:00:00 +08:00')).toBe(Date.UTC(2026, 10, 5))
+    expect(parseTokenExpiry('2026-11-05T00:00:00Z')).toBe(Date.UTC(2026, 10, 5))
+    expect(parseTokenExpiry('2026-11-05 00:00:00')).toBe(Date.UTC(2026, 10, 5))
+    expect(parseTokenExpiry('')).toBe(0)
+    expect(parseTokenExpiry(undefined)).toBe(0)
+    expect(parseTokenExpiry('never')).toBe(0)
   })
 })
 

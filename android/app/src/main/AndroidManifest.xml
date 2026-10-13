@@ -56,6 +56,11 @@
                 android:resource="@xml/autofill_service" />
         </service>
 
+        <!-- 复制密码后定时清空剪贴板：app 在后台被冻结时由系统闹钟唤起（规格 6.4） -->
+        <receiver
+            android:name=".SecureClipboardPlugin$ClearReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

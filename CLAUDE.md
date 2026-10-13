@@ -51,6 +51,7 @@ npm run cap:sync             # 构建并同步到 android/
 - 界面只通过 `src/store.ts` 改数据；保险库是不可变对象（`shallowRef`），编辑用 `core/vault.ts` 的纯函数生成新状态再 `commit`。
 - 本地文件一律经过 `platform/files.ts` 的 `SlotStore`，不要直接用 Filesystem 写保险库。
 - 视觉：“铜匮”——宣纸底、宋体，强调色古铜金 `--accent`，成功和开关用铜绿 `--ok`，深色是漆黑底。新界面沿用 `style.css` 的变量和 `.group / .row / .field / .solid-btn` 这些类，不引入新风格。
+- 标志只有一个：`design/icon.svg` 的金匣子。桌面图标、启动图由 `render.mjs` 生成，app 里用 `components/Logo.vue`（直接引用这个 SVG），不要再画别的标志。
 
 ## 常见的坑
 
@@ -68,6 +69,7 @@ npm run cap:sync             # 构建并同步到 android/
 | 用 `FillResponse.setAuthentication`（整个响应要验证），窗口却交回 Dataset | 系统当成无效结果悄悄丢掉，“选了账号却没填进去”。验证挂在 Dataset 上（`Dataset.Builder.setAuthentication`，值留空）。桩类故意不提供前者 |
 | 交回的 Dataset 用重新解析出来的 AutofillId | 可能和提示里的对不上。用服务放进 Intent 的原样 ID（`EXTRA_USERNAME_ID` / `EXTRA_PASSWORD_ID`） |
 | 调起系统界面（选文件、分享、设置弹窗）后靠 focus 事件恢复“离开上锁” | 安卓 WebView 不一定发 focus。用 `expectExternal()`：下一次切后台用掉、回前台作废、会过期 |
+| 后台的定时器（Handler、setTimeout） | 安卓 11 起后台 app 会被冻结，定时器不跑。一定要按时做的（清剪贴板）用系统闹钟唤起，回到前台时再补一次 |
 | 在后台弹指纹框 | 系统会立刻取消，回来就没有指纹框。只在 `app.active` 时弹，回前台看 `foregroundTick` |
 | 真机才出现的问题 | 先看“设置 → 诊断记录”（`diag.ts`、`AutofillLog.java`），缺信息就补记录，不记任何秘密 |
 | 原生插件在 `window.__autofillMock` / `__vaultKeyMock` 有假实现 | 端到端测试用它们模拟自动填充窗口和指纹 |

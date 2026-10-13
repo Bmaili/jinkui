@@ -1,5 +1,6 @@
 <script setup lang="ts">
 /** 首页：左侧目录、搜索、条目列表、同步状态 */
+import Logo from '../components/Logo.vue'
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
@@ -90,7 +91,7 @@ async function turnOnBio() {
 <template>
   <div class="home">
     <header class="topbar">
-      <div class="title"><span class="seal">匮</span><h1>金匮</h1></div>
+      <div class="title"><Logo :size="30" /><h1>金匮</h1></div>
       <button class="icon-btn" :class="{ spin: app.sync.running }" :aria-label="syncLabel" :title="syncLabel" @click="onSyncTap">
         <Icon :name="syncIcon" />
       </button>

@@ -13,6 +13,8 @@ export interface GitHubMock {
   commits: string[]
   /** 仓库是否私有 */
   isPrivate: boolean
+  /** Token 的过期时间，按 GitHub 的格式（例如 2026-11-05 00:00:00 UTC）放在每个响应头里；空字符串表示不会过期 */
+  tokenExpiry: string
   /** 让接下来的 n 个请求返回 502 */
   failNext: (n: number) => void
   close: () => Promise<void>
@@ -26,6 +28,7 @@ export async function startGitHubMock(opts: { owner: string; repo: string; token
     files: new Map(),
     commits: [],
     isPrivate: true,
+    tokenExpiry: '',
     failNext: (n) => (failures = n),
     close: () => new Promise((r) => server.close(() => r())),
   }
@@ -38,6 +41,8 @@ export async function startGitHubMock(opts: { owner: string; repo: string; token
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Accept, Content-Type, X-GitHub-Api-Version')
     res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS')
+    res.setHeader('Access-Control-Expose-Headers', 'GitHub-Authentication-Token-Expiration')
+    if (mock.tokenExpiry) res.setHeader('GitHub-Authentication-Token-Expiration', mock.tokenExpiry)
     if (req.method === 'OPTIONS') return void res.writeHead(204).end()
     const send = (status: number, data?: unknown) =>
       res.writeHead(status, { 'Content-Type': 'application/json' }).end(data === undefined ? '' : JSON.stringify(data))

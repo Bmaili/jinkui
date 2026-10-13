@@ -235,18 +235,6 @@ button.row:active { background: var(--line); }
 .empty { padding: 64px 24px; color: var(--muted); text-align: center; }
 
 /* 印章：标题“金匮”旁的小方印 */
-.seal {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 15px;
-  font-weight: 800;
-  line-height: 1;
-}
 
 @keyframes rise-in { from { opacity: 0; transform: translateY(12px); } }
 @keyframes fade-in { from { opacity: 0; } }

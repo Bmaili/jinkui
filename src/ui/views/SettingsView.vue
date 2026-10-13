@@ -95,10 +95,14 @@ async function onCsv(e: Event) {
   toast(`导入了 ${res.added} 条${res.duplicates ? `，跳过 ${res.duplicates} 条重复的` : ''}`)
 }
 
+/** scrypt 会卡住界面一两秒：先让“正在…”画出来再开始 */
+const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)))
+
 async function askPass(title: string, message: string): Promise<string | null> {
   const p = await promptText({ title, message, ok: '继续', input: { password: true, placeholder: '主密码' } })
   if (!p) return null
   busy.value = '正在核对主密码…'
+  await frame()
   try {
     if (await verifyPassphrase(p)) return p
     toast('主密码不对')
@@ -119,6 +123,7 @@ async function exportBackup() {
   const p = await askPass('导出加密备份', '备份文件用主密码加密（age 格式）。电脑上装 age 后运行 age -d 文件名 > vault.json，输入主密码即可解开。请输入主密码。')
   if (!p) return
   busy.value = '正在加密…'
+  await frame()
   try {
     await exportBackupFile(p)
   } catch (e) {

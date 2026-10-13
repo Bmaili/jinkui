@@ -1,5 +1,6 @@
 <script setup lang="ts">
 /** 第一次打开：新建保险库，或用主密码加入已有的保险库 */
+import Logo from '../components/Logo.vue'
 import { computed, reactive, ref } from 'vue'
 import BackendForm from '../components/BackendForm.vue'
 import { configFrom, draftFrom } from '../backendDraft'
@@ -137,7 +138,7 @@ function back() {
 
     <section v-if="step === 'welcome'" class="welcome page">
       <div class="brand rise">
-        <span class="seal big">匮</span>
+        <Logo :size="72" />
         <h1>金匮</h1>
         <p class="tag">密码藏于金匮，钥匙只在你手里</p>
       </div>
@@ -217,7 +218,6 @@ function back() {
 .brand { text-align: center; }
 .brand h1 { margin: 14px 0 4px; font-size: 34px; letter-spacing: 0.3em; text-indent: 0.3em; }
 .tag { margin: 0; color: var(--muted); }
-.seal.big { width: 64px; height: 64px; font-size: 32px; border-radius: 12px; }
 .points { margin: 36px 0 0; padding-left: 1.2em; color: var(--muted); line-height: 1.8; }
 .points b { color: var(--ink); }
 .actions { display: flex; flex-direction: column; gap: 12px; margin-top: 28px; align-items: center; }

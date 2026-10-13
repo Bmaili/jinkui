@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Logo from './components/Logo.vue'
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { App as CapApp } from '@capacitor/app'
@@ -24,7 +25,7 @@ onMounted(() => {
 
 <template>
   <div class="shell" :data-phase="app.phase">
-    <div v-if="app.phase === 'loading'" class="splash"><span class="seal big">匮</span></div>
+    <div v-if="app.phase === 'loading'" class="splash"><Logo :size="72" /></div>
     <SetupView v-else-if="app.phase === 'setup'" />
     <LockView v-else-if="app.phase === 'locked'" />
     <div v-else-if="app.phase === 'broken'" class="broken page">
@@ -45,7 +46,6 @@ onMounted(() => {
 
 <style scoped>
 .splash { display: grid; place-items: center; min-height: 100vh; }
-.seal.big { width: 64px; height: 64px; font-size: 32px; border-radius: 12px; }
 .broken { padding-top: calc(60px + var(--safe-top)); }
 .toast {
   position: fixed;

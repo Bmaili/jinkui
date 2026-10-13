@@ -1,5 +1,6 @@
 <script setup lang="ts">
 /** 锁屏：主密码或指纹解锁。打开时如果开了指纹，自动弹出指纹框 */
+import Logo from '../components/Logo.vue'
 import { nextTick, onMounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { app, setBioPrompting, unlockWithBio, unlockWithPassword, wipeDevice } from '../../store'
@@ -81,7 +82,7 @@ watch(() => app.foregroundTick, autoBio)
 <template>
   <div class="lock page">
     <div class="brand">
-      <span class="seal big">匮</span>
+      <Logo :size="64" />
       <h1>金匮</h1>
       <p class="muted">已上锁</p>
     </div>
@@ -106,7 +107,6 @@ watch(() => app.foregroundTick, autoBio)
 .brand { text-align: center; }
 .brand h1 { margin: 14px 0 2px; font-size: 30px; letter-spacing: 0.3em; text-indent: 0.3em; }
 .brand p { margin: 0; }
-.seal.big { width: 60px; height: 60px; font-size: 30px; border-radius: 12px; }
 .form { display: flex; flex-direction: column; gap: 12px; margin-top: 40px; }
 .bio { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 28px auto 0; padding: 10px 18px; border: 0; border-radius: 18px; background: transparent; color: var(--accent); }
 .bio:active { background: var(--line); }

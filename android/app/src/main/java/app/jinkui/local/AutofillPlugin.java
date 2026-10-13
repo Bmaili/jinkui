@@ -88,7 +88,7 @@ public class AutofillPlugin extends Plugin {
     }
 
     @TargetApi(Build.VERSION_CODES.O)
-    private void load() {
+    private void readRequest() {
         if (loaded) return;
         loaded = true;
         Activity a = getActivity();
@@ -117,7 +117,7 @@ public class AutofillPlugin extends Plugin {
 
     @PluginMethod
     public void getRequest(PluginCall call) {
-        load();
+        readRequest();
         JSObject ret = new JSObject();
         if (fillTarget != null && !fillTarget.isEmpty()) {
             ret.put("mode", "fill");
@@ -144,7 +144,7 @@ public class AutofillPlugin extends Plugin {
     @PluginMethod
     @TargetApi(Build.VERSION_CODES.O)
     public void fill(final PluginCall call) {
-        load();
+        readRequest();
         if (fillTarget == null || fillTarget.isEmpty()) {
             call.reject("没有要填充的输入框");
             return;

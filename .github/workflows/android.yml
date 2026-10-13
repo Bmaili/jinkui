@@ -9,12 +9,8 @@ on:
   push:
     branches: [main, release]
     tags: ['v*']
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'e2e/**'
-      - 'design/**'
-      - 'LICENSE'
+    # 不按路径过滤：release 分支新建时和 main 指向同一个提交，GitHub 算出的改动为空，
+    # 带路径过滤时整次运行会被跳过，发布不出来
   workflow_dispatch:
 
 permissions:

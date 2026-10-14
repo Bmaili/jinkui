@@ -4,7 +4,7 @@
 import { HISTORY_MAX, contentOf, isItem, sameContent, snapshotOf, type Item, type ItemContent } from './item'
 import { mergeItems, normalizeHistory } from './merge'
 import { maxRev, nextRev, type Rev } from './rev'
-import { checkFolderName, isFolder, mergeFolders, putFolder, type Folder, type Folders } from './folders'
+import { ORDER_STEP, checkFolderName, hasOrder, isFolder, liveFolders, mergeFolders, putFolder, type Folder, type Folders } from './folders'
 
 /** 当前格式版本。只能加字段，不能改已有字段的含义；真要不兼容地改才加一 */
 export const FORMAT = 1
@@ -196,8 +196,50 @@ export function createFolder(state: VaultState, name: string, ctx: EditCtx): { s
   const err = checkFolderName(name, state.folders)
   if (err) throw new Error(err)
   const id = ctx.newId ?? crypto.randomUUID()
-  const folders = putFolder(state.folders, { id, name: name.trim() }, vaultMaxRev(state), ctx.device, ctx.now)
+  // 拖动排过序之后新建的目录放在最后；从没排过序时不给位置，和老版本一样按名字排
+  const ordered = liveFolders(state.folders).filter(hasOrder)
+  const f: { id: string; name: string; order?: number } = { id, name: name.trim() }
+  if (ordered.length) f.order = Math.floor(Math.max(...ordered.map((x) => x.order)) / ORDER_STEP + 1) * ORDER_STEP
+  const folders = putFolder(state.folders, f, vaultMaxRev(state), ctx.device, ctx.now)
   return { state: { ...state, folders }, id }
+}
+
+/**
+ * 把目录拖到第 to 个位置（在没删除的目录里数，从 0 开始）。一般只改这一个目录的位置（取前后两个的中间值），
+ * 合并时和别的设备拖动别的目录互不影响；还有目录没有位置、或者间隔用完了，才给全部目录重新编号。
+ */
+export function moveFolder(state: VaultState, id: string, to: number, ctx: EditCtx): VaultState {
+  const list = liveFolders(state.folders)
+  const from = list.findIndex((f) => f.id === id)
+  if (from < 0) throw new Error('目录不存在')
+  to = Math.max(0, Math.min(list.length - 1, Math.round(to)))
+  if (from === to) return state
+  const moved = list[from]
+  const rest = list.filter((f) => f.id !== id)
+  const prev = rest[to - 1]
+  const next = rest[to]
+  let target: number | null = null
+  if (rest.every(hasOrder) && (prev || next)) {
+    if (prev && next) {
+      const m = (prev.order! + next.order!) / 2
+      if (m > prev.order! && m < next.order! && next.order! - prev.order! > 1e-6) target = m
+    } else target = prev ? prev.order! + ORDER_STEP : next.order! - ORDER_STEP
+  }
+  const without = ({ rev: _r, ...f }: Folder) => (void _r, f)
+  let folders = state.folders
+  let seen = vaultMaxRev(state)
+  const put = (f: Folder, order: number) => {
+    folders = putFolder(folders, { ...without(f), order }, seen, ctx.device, ctx.now)
+    seen = folders[f.id].rev
+  }
+  if (target !== null) put(moved, target)
+  else {
+    rest.splice(to, 0, moved)
+    rest.forEach((f, i) => {
+      if (f.order !== (i + 1) * ORDER_STEP) put(f, (i + 1) * ORDER_STEP)
+    })
+  }
+  return { ...state, folders }
 }
 
 function existingFolder(state: VaultState, id: string): Folder {

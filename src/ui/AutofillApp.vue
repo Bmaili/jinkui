@@ -11,7 +11,8 @@ import Icon from './components/Icon.vue'
 import Switch from './components/Switch.vue'
 import Dialog from './components/Dialog.vue'
 import LockView from './views/LockView.vue'
-import { app, rememberApp, saveCredential, syncBeforeClose, vault } from '../store'
+import { app, markUsed, rememberApp, saveCredential, siteIcons, syncBeforeClose, vault } from '../store'
+import { prefs } from '../prefs'
 import { autofill, type AutofillRequest } from '../platform/autofill'
 import { baseDomain, hostOf, matchItems, remembersApp } from '../core/autofill'
 import { liveItems } from '../core/vault'
@@ -21,6 +22,8 @@ import type { Item } from '../core/item'
 import { avatarColor } from './format'
 
 const props = defineProps<{ req: AutofillRequest }>()
+/** 主界面取过的网站图标（这个窗口只读缓存，不去网上取） */
+const iconOf = (it: Item) => (prefs.siteIcons && it.urls?.[0] ? siteIcons.value[hostOf(it.urls[0])] : undefined)
 const req = props.req
 const isWeb = !!req.webDomain
 const target = req.webDomain ? hostOf(req.webDomain) || req.webDomain : req.appLabel || req.packageName || '这个 app'
@@ -66,6 +69,7 @@ async function pick(it: Item, from: string) {
   autofill.log(`选择了一条（${from}），交回 账号=${username ? '有' : '无'} 密码=${password ? '有' : '无'}`)
   try {
     if (remember.value && req.packageName && !isWeb && !remembersApp(it, req.packageName)) await rememberApp(it.id, req.packageName)
+    await markUsed(it.id)
     await autofill.fill({ username, password })
     watchClose()
   } catch (e) {
@@ -208,7 +212,7 @@ function generate() {
           <ul class="list">
             <li v-for="it in suggested" :key="it.id">
               <button class="entry" :disabled="busy" @click="pick(it, '推荐')">
-                <span class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
+                <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" /></span><span v-else class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
                 <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
               </button>
             </li>
@@ -218,7 +222,7 @@ function generate() {
         <ul class="list">
           <li v-for="it in others" :key="it.id">
             <button class="entry" :disabled="busy" @click="pick(it, q.trim() ? '搜索' : '其他')">
-              <span class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
+              <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" /></span><span v-else class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
               <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
             </button>
           </li>
@@ -251,6 +255,8 @@ function generate() {
 .entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 62px; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
 .entry:active { background: var(--line); }
 .avatar { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 11px; color: #fbf8f1; font-weight: 700; }
+.avatar.site { overflow: hidden; background: #fff; border: 1px solid var(--line); }
+.avatar.site img { width: 26px; height: 26px; object-fit: contain; }
 .text { display: flex; flex-direction: column; min-width: 0; }
 .t, .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t { font-weight: 700; }

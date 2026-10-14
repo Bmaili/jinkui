@@ -14,6 +14,8 @@ export interface Folder {
   name: string
   rev: Rev
   deleted?: boolean
+  /** 排序位置（1.0.7 起，小的在前）。没有的排在有的后面、按名字排；老版本原样保留这个字段 */
+  order?: number
   /** 未知字段原样保留 */
   [extra: string]: unknown
 }
@@ -39,10 +41,27 @@ export function mergeFolders(a: Folders = {}, b: Folders = {}): Folders {
   return out
 }
 
-/** 没删除的目录，按名字排序（中文按拼音） */
+/** 两台设备同时拖动时可能拿到同一个位置：位置相同再按名字、ID，各设备显示一样 */
+export const hasOrder = (f: Folder): f is Folder & { order: number } => typeof f.order === 'number' && Number.isFinite(f.order)
+
+/**
+ * 没删除的目录，按用户拖出来的顺序（规格 4.5）。没有位置的（拖动过之前就有的、老版本上新建的）
+ * 排在后面、按名字排（中文按拼音）。
+ */
 export function liveFolders(folders: Folders = {}): Folder[] {
-  return Object.values(folders).filter((f) => !f.deleted).sort((x, y) => x.name.localeCompare(y.name, 'zh-CN'))
+  return Object.values(folders)
+    .filter((f) => !f.deleted)
+    .sort((x, y) => {
+      const a = hasOrder(x)
+      const b = hasOrder(y)
+      if (a !== b) return a ? -1 : 1
+      if (a && b && x.order !== y.order) return x.order! - y.order!
+      return x.name.localeCompare(y.name, 'zh-CN') || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0)
+    })
 }
+
+/** 位置之间的间隔：拖动一个目录通常只改它自己（取前后两个的中间值），间隔用完了才全部重新编号 */
+export const ORDER_STEP = 1024
 
 /** 条目实际所在的目录：指向的目录不存在或已删除时返回 null（未分类） */
 export function folderOf(folders: Folders | undefined, folderId: unknown): Folder | null {

@@ -6,6 +6,7 @@ import BackendForm from '../components/BackendForm.vue'
 import { configFrom, draftFrom } from '../backendDraft'
 import { probeBackend, setupJoin, setupNew, type BackendConfig } from '../../store'
 import { checkPassphrase, generatePassphrase } from '../../core/crypto'
+import { normalizeJoinCode, readJoinCode } from '../../core/sync/setup'
 import { estimateBits, strengthLabel } from '../../core/generator'
 import { ask } from '../dialog'
 import { copyPlain } from '../../store'
@@ -22,6 +23,9 @@ const pass = ref('')
 const pass2 = ref('')
 const show = ref(false)
 const generated = ref(false)
+/** 加入时粘贴的加入码（有它就不用填同步设置） */
+const code = ref('')
+const codeOk = computed(() => !!normalizeJoinCode(code.value))
 
 const strength = computed(() => strengthLabel(estimateBits(pass.value)))
 const passError = computed(() => (pass.value ? checkPassphrase(pass.value) : null))
@@ -34,6 +38,13 @@ function start(m: 'new' | 'join') {
 
 async function nextFromBackend() {
   error.value = ''
+  if (mode.value === 'join' && code.value.trim()) {
+    if (!codeOk.value) return void (error.value = '这不是完整的加入码，请在另一台设备上重新复制')
+    backend.value = null
+    pass.value = ''
+    step.value = 'password'
+    return
+  }
   const r = configFrom(draft)
   if ('error' in r) {
     error.value = r.error
@@ -112,7 +123,14 @@ async function finish() {
     busy.value = '正在解开保险库…'
     await frame()
     try {
-      await setupJoin(pass.value, backend.value!)
+      let cfg = backend.value
+      if (!cfg) {
+        // 用加入码：先用主密码解开里面的同步配置，再按正常的加入走
+        const r = configFrom(draftFrom((await readJoinCode(code.value, pass.value)) as BackendConfig))
+        if ('error' in r) throw new Error(`加入码里的同步设置不对：${r.error}`)
+        cfg = r.cfg
+      }
+      await setupJoin(pass.value, cfg)
     } catch (e) {
       error.value = (e as Error).message
     } finally {
@@ -155,8 +173,14 @@ function back() {
     </section>
 
     <section v-else-if="step === 'backend'" class="page">
-      <p class="muted lead">{{ mode === 'new' ? '选一个存放加密数据的地方。建议用一个单独的私有仓库，例如 jinkui-data。' : '填写和另一台设备相同的同步设置。' }}</p>
-      <BackendForm v-model="draft" />
+      <template v-if="mode === 'join'">
+        <p class="muted lead">在另一台设备的“设置 → 同步与设备 → 生成加入码”复制加入码，粘贴在这里：</p>
+        <textarea v-model="code" class="field mono code" rows="3" placeholder="jinkui-join:…" aria-label="加入码"
+          autocapitalize="off" spellcheck="false" @input="error = ''" />
+        <p v-if="!code.trim()" class="muted lead or">没有加入码？填写和另一台设备相同的同步设置：</p>
+      </template>
+      <p v-else class="muted lead">选一个存放加密数据的地方。建议用一个单独的私有仓库，例如 jinkui-data。</p>
+      <BackendForm v-if="mode === 'new' || !code.trim()" v-model="draft" />
       <p v-if="error" class="note-box err">{{ error }}</p>
       <div class="actions">
         <button class="solid-btn block" :disabled="!!busy" @click="nextFromBackend">
@@ -196,7 +220,7 @@ function back() {
         </div>
       </template>
       <template v-else>
-        <p class="muted lead">输入这个保险库的主密码。</p>
+        <p class="muted lead">输入这个保险库的主密码{{ backend ? '' : '（加入码也用它解开）' }}。</p>
         <label class="lbl" for="mpj">主密码</label>
         <input id="mpj" v-model="pass" class="field mono" type="password" autocomplete="current-password" autocapitalize="off"
           spellcheck="false" @keyup.enter="finish" />
@@ -224,6 +248,8 @@ function back() {
 .welcome .actions { margin-top: auto; padding-bottom: 24px; }
 .center { text-align: center; margin: 0; }
 .lead { margin: 4px 2px 8px; line-height: 1.7; }
+.code { width: 100%; resize: none; font-size: 13px; line-height: 1.5; word-break: break-all; }
+.or { margin-top: 18px; }
 .pw { position: relative; }
 .pw .field { padding-right: 48px; }
 .pw .icon-btn { position: absolute; right: 4px; top: 5px; }

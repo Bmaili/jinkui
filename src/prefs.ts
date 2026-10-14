@@ -25,6 +25,10 @@ export interface Prefs {
   keyUploadPending: boolean
   /** 自动检查更新 */
   autoUpdate: boolean
+  /** 各目录列表的排序方式（1.0.7 起，只在本机）：'all' 全部、'none' 未分类、其他是目录ID → SortMode；没有的按名称 */
+  sortModes: Record<string, string>
+  /** 显示网站图标（1.0.7 起，默认关）：直接向条目网址的网站取图标，缓存加密存在本机 */
+  siteIcons: boolean
 }
 
 const KEY = 'jinkui.prefs.v1'
@@ -40,6 +44,8 @@ export const defaults = (): Prefs => ({
   bioData: '',
   keyUploadPending: false,
   autoUpdate: true,
+  sortModes: {},
+  siteIcons: false,
 })
 
 export const prefs = reactive<Prefs>(defaults())
@@ -52,7 +58,7 @@ export async function loadPrefs(): Promise<void> {
     if (raw) {
       const saved = JSON.parse(raw) as Partial<Prefs>
       for (const k of Object.keys(prefs) as (keyof Prefs)[]) {
-        if (k in saved && typeof saved[k] === typeof prefs[k]) (prefs as Record<string, unknown>)[k] = saved[k]
+        if (k in saved && typeof saved[k] === typeof prefs[k] && (saved[k] === null) === (prefs[k] === null)) (prefs as Record<string, unknown>)[k] = saved[k]
       }
       // 1.0.1 的设置（没有 prefsVersion）：自动上锁改成新的默认值“立即”
       if (!saved.prefsVersion) {

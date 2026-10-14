@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /** 条目详情：复制用户名、密码，打开网址，查看备注和自定义字段 */
-import { computed, reactive } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import { App as CapApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
-import { app, copyPlain, copySecret, forgetApp, removeItem, saveItem, toast, vault } from '../../store'
+import { app, copyPlain, copySecret, forgetApp, markUsed, removeItem, saveItem, toast, vault } from '../../store'
 import { prefs } from '../../prefs'
 import { folderOf } from '../../core/folders'
 import { ask } from '../dialog'
@@ -16,6 +16,11 @@ const router = useRouter()
 const item = computed(() => vault.value.items[String(route.params.id)])
 const folder = computed(() => folderOf(vault.value.folders, item.value?.folder))
 const shown = reactive<Record<string, boolean>>({})
+
+// 打开详情算一次“使用”（“最近使用”排序用，只记在本机）
+watch(() => [String(route.params.id), app.phase] as const, ([id, ph]) => {
+  if (ph === 'unlocked') void markUsed(id)
+}, { immediate: true })
 
 const deviceName = (id: string) =>
   id === prefs.deviceId ? '本机' : app.sync.devices.find((d) => d.id === id)?.name ?? `设备 ${id.slice(0, 4)}`

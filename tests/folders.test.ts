@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { canonicalJson } from '../src/core/item'
 import { folderOf, liveFolders } from '../src/core/folders'
 import {
-  createFolder, createItem, deleteFolder, emptyVault, gcTombstones, mergeVaults, parseVault, renameFolder, TOMBSTONE_TTL, updateItem,
+  createFolder, createItem, deleteFolder, emptyVault, gcTombstones, mergeVaults, moveFolder, parseVault, renameFolder, TOMBSTONE_TTL, updateItem,
   type VaultState,
 } from '../src/core/vault'
 
@@ -107,6 +107,97 @@ describe('目录', () => {
       const all = mergeVaults(mergeVaults(a, b), c)
       expect(j(mergeVaults(all, all))).toBe(j(all))
       expect(j(mergeVaults(all, c))).toBe(j(all))
+    }
+  })
+})
+
+describe('目录顺序（1.0.7）', () => {
+  const names = (s: VaultState) => liveFolders(s.folders).map((f) => f.name)
+  const setup = () => {
+    let s = emptyVault()
+    for (const [n, id] of [['乙', 'f2'], ['甲', 'f1'], ['丙', 'f3']]) s = createFolder(s, n, ctx('A', 0, id)).state
+    return s
+  }
+
+  it('没拖动过时按名字排，和老版本一样；新建也不带位置', () => {
+    const s = setup()
+    expect(names(s)).toEqual(['丙', '甲', '乙'])
+    expect(Object.values(s.folders!).some((f) => 'order' in f)).toBe(false)
+  })
+
+  it('第一次拖动给全部目录编号；之后拖动只改被拖的那一个；新建的放最后', () => {
+    let s = moveFolder(setup(), 'f2', 0, ctx('A', 10))
+    expect(names(s)).toEqual(['乙', '丙', '甲'])
+    expect(Object.values(s.folders!).every((f) => typeof f.order === 'number')).toBe(true)
+    const before = { ...s.folders! }
+    s = moveFolder(s, 'f1', 1, ctx('A', 20))
+    expect(names(s)).toEqual(['乙', '甲', '丙'])
+    const changed = Object.keys(s.folders!).filter((id) => s.folders![id] !== before[id])
+    expect(changed).toEqual(['f1'])
+    s = createFolder(s, '丁', ctx('A', 30, 'f4')).state
+    expect(names(s)).toEqual(['乙', '甲', '丙', '丁'])
+    expect(moveFolder(s, 'f4', 3, ctx('A', 40))).toBe(s)
+  })
+
+  it('间隔用完了会全部重新编号，顺序仍然对', () => {
+    let s = moveFolder(setup(), 'f1', 0, ctx('A', 1))
+    for (let i = 0; i < 80; i++) {
+      const list = liveFolders(s.folders)
+      s = moveFolder(s, list[2].id, 1, ctx('A', 2 + i))
+      const want = [list[0], list[2], list[1]].map((f) => f.name)
+      expect(names(s)).toEqual(want)
+    }
+  })
+
+  it('老版本新建的目录（没有位置）排在后面按名字排；改名保留位置', () => {
+    let s = moveFolder(setup(), 'f3', 2, ctx('A', 1))
+    s = { ...s, folders: { ...s.folders, old: { id: 'old', name: '阿', rev: { t: T0 + 5, c: 0, d: 'B' } } } }
+    expect(names(s).at(-1)).toBe('阿')
+    const order = s.folders!.f1.order
+    s = renameFolder(s, 'f1', '甲甲', ctx('A', 10))
+    expect(s.folders!.f1.order).toBe(order)
+  })
+
+  it('两台设备各拖各的目录：两个改动都保留；拖同一个目录时后拖的当选，两边一样', () => {
+    const base = moveFolder(setup(), 'f1', 0, ctx('A', 1)) // 甲 丙 乙
+    const a = moveFolder(base, 'f2', 0, ctx('A', 10)) // 乙 甲 丙
+    const b = moveFolder(base, 'f3', 0, ctx('B', 20)) // 丙 甲 乙
+    const m = mergeVaults(a, b)
+    expect(canonicalJson(m)).toBe(canonicalJson(mergeVaults(b, a)))
+    expect(m.folders!.f2.order).toBe(a.folders!.f2.order)
+    expect(m.folders!.f3.order).toBe(b.folders!.f3.order)
+    const a2 = moveFolder(base, 'f2', 0, ctx('A', 30))
+    const b2 = moveFolder(base, 'f2', 1, ctx('B', 40))
+    expect(names(mergeVaults(a2, b2))).toEqual(names(b2))
+  })
+
+  it('随机拖动、改名、删除：交换律、结合律、幂等', () => {
+    let seed = 7
+    const r = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32)
+    for (let round = 0; round < 200; round++) {
+      const start = setup()
+      const [a, b, c] = ['A', 'B', 'C'].map((d) => {
+        let s: VaultState = start
+        for (let i = 0; i < 1 + Math.floor(r() * 6); i++) {
+          const now = 10 + Math.floor(r() * 1000)
+          const live = liveFolders(s.folders)
+          const x = r()
+          try {
+            if (x < 0.5 && live.length) s = moveFolder(s, live[Math.floor(r() * live.length)].id, Math.floor(r() * live.length), ctx(d, now))
+            else if (x < 0.7) s = createFolder(s, `${d}${round}-${i}`, ctx(d, now, `${d}-${round}-${i}`)).state
+            else if (x < 0.85 && live.length) s = renameFolder(s, live[Math.floor(r() * live.length)].id, `${d}改${i}-${round}`, ctx(d, now))
+            else if (live.length) s = deleteFolder(s, live[Math.floor(r() * live.length)].id, ctx(d, now))
+          } catch { /* 同名，跳过 */ }
+        }
+        return s
+      })
+      const j = (s: VaultState) => canonicalJson(s)
+      expect(j(mergeVaults(a, b))).toBe(j(mergeVaults(b, a)))
+      expect(j(mergeVaults(mergeVaults(a, b), c))).toBe(j(mergeVaults(a, mergeVaults(b, c))))
+      const all = mergeVaults(mergeVaults(a, b), c)
+      expect(j(mergeVaults(all, all))).toBe(j(all))
+      // 显示顺序只取决于合并结果
+      expect(names(mergeVaults(c, mergeVaults(b, a)))).toEqual(names(all))
     }
   })
 })

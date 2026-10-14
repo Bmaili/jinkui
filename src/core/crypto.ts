@@ -150,6 +150,16 @@ export class VaultCipher {
   }
 }
 
+/**
+ * 同时加密给几把公钥（任意一把私钥都能解开）。换保险库密钥（重新加入）时，
+ * 本机文件先加密给新旧两把：中途 app 被杀，不管磁盘上的身份密钥是哪一把都还能解开。
+ */
+export async function encryptJsonTo(recipients: string[], v: unknown): Promise<Uint8Array> {
+  const e = new Encrypter()
+  for (const r of recipients) e.addRecipient(r)
+  return e.encrypt(utf8(JSON.stringify(v)))
+}
+
 /** 数据仓库根目录的说明（明文），告诉人不用 app 怎么解开 */
 export const DATA_README_TEXT = `# 金匮 保险库
 

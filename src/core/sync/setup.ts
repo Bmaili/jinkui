@@ -1,9 +1,11 @@
 /**
  * 建立保险库、新设备加入、改主密码（规格 6.2）。
  */
-import { utf8 } from '../bytes'
+import { Decrypter, Encrypter } from 'age-encryption'
+import { fromBase64, toBase64, utf8 } from '../bytes'
 import {
-  DATA_README, DATA_README_TEXT, KEY_IDENTITY, KEY_INFO, keyInfoOf, parseKeyInfo, unwrapIdentity, type KeyBundle,
+  DATA_README, DATA_README_TEXT, DEFAULT_WORK_FACTOR, KEY_IDENTITY, KEY_INFO, WrongPassphraseError, keyInfoOf, parseKeyInfo, unwrapIdentity,
+  type KeyBundle,
 } from '../crypto'
 import type { RemoteStore } from './remote'
 
@@ -54,6 +56,63 @@ export async function joinRemote(remote: RemoteStore, passphrase: string): Promi
   const keys = await unwrapIdentity(wrapped, passphrase)
   if (keys.recipient !== info.recipient) throw new Error('云端的密钥文件和公钥不匹配，可能被改动过')
   return keys
+}
+
+/**
+ * 加入码：把同步配置（含 Token / AccessKey）用主密码加密（age scrypt，和 identity.age 同样强度）成一行文字，
+ * 新设备上粘贴、再输入主密码，就不用手抄 Token。没有主密码的人拿到加入码也解不开。
+ */
+export const JOIN_PREFIX = 'jinkui-join:'
+
+interface JoinPayload {
+  format: 'jinkui-join'
+  version: 1
+  backend: unknown
+}
+
+export async function makeJoinCode(backend: unknown, passphrase: string, workFactor = DEFAULT_WORK_FACTOR): Promise<string> {
+  const e = new Encrypter()
+  e.setPassphrase(passphrase)
+  e.setScryptWorkFactor(workFactor)
+  const payload: JoinPayload = { format: 'jinkui-join', version: 1, backend }
+  return JOIN_PREFIX + toBase64(await e.encrypt(utf8(JSON.stringify(payload))))
+}
+
+/** 去掉空白后像不像加入码（粘贴时可能带换行、空格） */
+export function normalizeJoinCode(s: string): string | null {
+  const t = s.replace(/\s+/g, '')
+  return t.startsWith(JOIN_PREFIX) && t.length > JOIN_PREFIX.length + 40 ? t : null
+}
+
+/** 用主密码解开加入码，返回里面的同步配置（调用方再校验配置的内容） */
+export async function readJoinCode(code: string, passphrase: string): Promise<unknown> {
+  const t = normalizeJoinCode(code)
+  if (!t) throw new Error('这不是金匮的加入码')
+  let bytes: Uint8Array
+  try {
+    bytes = fromBase64(t.slice(JOIN_PREFIX.length))
+  } catch {
+    throw new Error('加入码不完整，请重新复制')
+  }
+  const d = new Decrypter()
+  d.addPassphrase(passphrase)
+  let plain: string
+  try {
+    plain = await d.decrypt(bytes, 'text')
+  } catch (e) {
+    const m = (e as Error).message
+    if (/no identity matched|incorrect|failed to decrypt/i.test(m)) throw new WrongPassphraseError()
+    throw new Error('加入码不完整，请重新复制')
+  }
+  let v: JoinPayload
+  try {
+    v = JSON.parse(plain)
+  } catch {
+    throw new Error('加入码内容不对')
+  }
+  if (v?.format !== 'jinkui-join' || typeof v.version !== 'number') throw new Error('加入码内容不对')
+  if (v.version > 1) throw new Error('这个加入码来自更新版本的金匮，请先升级')
+  return v.backend
 }
 
 /** 改主密码后上传新的 identity.age（只有它变，数据不用重新加密） */

@@ -13,7 +13,7 @@ import { App as CapApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { utf8 } from './core/bytes'
 import {
-  KEY_INFO, VaultCipher, WrongPassphraseError, changePassphrase as rewrap, createKeys, parseKeyInfo, unwrapIdentity, type KeyBundle,
+  KEY_INFO, VaultCipher, WrongPassphraseError, changePassphrase as rewrap, createKeys, encryptJsonTo, parseKeyInfo, unwrapIdentity, type KeyBundle,
 } from './core/crypto'
 import { identityToRecipient } from 'age-encryption'
 import { canonicalJson, type ItemContent } from './core/item'
@@ -22,12 +22,15 @@ import { OssStore, type OssConfig } from './core/sync/oss'
 import { RemoteError, type RemoteStore } from './core/sync/remote'
 import { KeyMismatchError, NotInitializedError, SyncEngine, type SyncHost, type SyncProblem, type SyncState } from './core/sync/engine'
 import type { DeviceInfo } from './core/sync/deviceFile'
-import { initRemote, joinRemote, probeRemote, uploadWrappedKey, type Probe } from './core/sync/setup'
+import { initRemote, joinRemote, makeJoinCode, probeRemote, uploadWrappedKey, type Probe } from './core/sync/setup'
 import {
-  FORMAT, FormatTooNewError, createFolder, createItem, deleteFolder, deleteItem, emptyVault, gcTombstones, mergeVaults, parseVault,
+  FORMAT, FormatTooNewError, createFolder, createItem, deleteFolder, deleteItem, emptyVault, gcTombstones, mergeVaults, moveFolder, parseVault,
   purgeItem, renameFolder, restoreItem, revertTo, updateItem, type VaultState,
 } from './core/vault'
 import { liveFolders } from './core/folders'
+import { fetchIcon, iconDue, iconHostAllowed, type IconEntry } from './core/icons'
+import { hostOf } from './core/autofill'
+import { http } from './core/http'
 import type { ImportedItem } from './core/csv'
 import type { Rev } from './core/rev'
 import { files, wipeLocal } from './platform/files'
@@ -87,6 +90,12 @@ export const app = reactive({
 
 /** 当前保险库（不可变对象，整个替换；shallowRef 避免把上千个条目都变成响应式） */
 export const vault = shallowRef<VaultState>(emptyVault())
+
+/**
+ * 本机记录的“最近使用”时间（条目ID → 毫秒），用于“最近使用”排序。只在本机，不同步；
+ * 存在加密的 usage 文件里（哪天用过哪些账号也是隐私），上锁时清掉。
+ */
+export const usedAt = shallowRef<Record<string, number>>({})
 
 let keys: KeyBundle | null = null
 let cipher: VaultCipher | null = null
@@ -167,7 +176,22 @@ export async function init(mode: 'main' | 'autofill' = 'main'): Promise<void> {
 }
 
 async function openWith(k: KeyBundle): Promise<void> {
-  if (prefs.recipient && k.recipient !== prefs.recipient) throw new Error('这把密钥不属于本机的保险库')
+  if (prefs.recipient && k.recipient !== prefs.recipient) {
+    // 换密钥（重新加入）时身份密钥已经写好、公钥设置还没存上 app 就被杀了：
+    // 本机保险库能用这把密钥解开，说明它就是本机现在的密钥，补上公钥设置
+    const b = await files.read('vault')
+    let ok = false
+    if (b) {
+      try {
+        await new VaultCipher(k).decrypt(b)
+        ok = true
+      } catch { /* 解不开 */ }
+    }
+    if (!ok) throw new Error('这把密钥不属于本机的保险库')
+    prefs.recipient = k.recipient
+    await savePrefs()
+    diag('本机公钥和身份密钥不一致（上次换密钥没做完），已修正')
+  }
   keys = k
   cipher = new VaultCipher(k)
   let v = emptyVault()
@@ -181,6 +205,8 @@ async function openWith(k: KeyBundle): Promise<void> {
   const cfg = await readEncrypted<{ backend: BackendConfig | null }>('config')
   syncState = await readEncrypted<SyncState>('syncstate')
   vault.value = gcTombstones(v)
+  usedAt.value = await readUsage()
+  await loadIcons()
   app.backend = cfg?.backend ?? null
   app.sync.pending = dirty
   app.sync.devices = Object.values(syncState?.devices ?? {})
@@ -229,6 +255,8 @@ export function lock(): void {
   syncState = null
   engine = null
   vault.value = emptyVault()
+  usedAt.value = {}
+  stopIcons()
   app.phase = 'locked'
 }
 
@@ -396,6 +424,149 @@ export async function renameFolderById(id: string, name: string): Promise<void> 
 
 export async function removeFolder(id: string): Promise<void> {
   await commit(deleteFolder(vault.value, id, ctx()))
+}
+
+/** 把目录拖到第 to 个位置（同步到其他设备） */
+export async function moveFolderTo(id: string, to: number): Promise<void> {
+  await commit(moveFolder(vault.value, id, to, ctx()))
+}
+
+// ---------- 最近使用（本机） ----------
+
+interface UsageFile {
+  format: 1
+  used: Record<string, number>
+}
+const MAX_USAGE = 3000
+
+async function readUsage(): Promise<Record<string, number>> {
+  try {
+    const f = await readEncrypted<UsageFile>('usage')
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(f?.used ?? {})) if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 记一次使用（打开详情、自动填充选中）。自动填充窗口和主界面各写各的：写之前先读磁盘上的取较大值，
+ * 不会互相覆盖。顺手清掉已经不存在的条目，最多留 MAX_USAGE 条。
+ */
+export async function markUsed(id: string): Promise<void> {
+  if (!cipher || !vault.value.items[id]) return
+  const now = Date.now()
+  usedAt.value = { ...usedAt.value, [id]: now }
+  try {
+    const disk = await readUsage()
+    const merged: Record<string, number> = { ...disk }
+    for (const [k, v] of Object.entries(usedAt.value)) if (!(merged[k] >= v)) merged[k] = v
+    const live = Object.entries(merged)
+      .filter(([k]) => vault.value.items[k] && !vault.value.items[k].purged)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_USAGE)
+    if (!cipher) return
+    const used = Object.fromEntries(live)
+    usedAt.value = used
+    await writeEncrypted('usage', { format: 1, used } satisfies UsageFile)
+  } catch { /* 只影响排序，写不进去就算了 */ }
+}
+
+// ---------- 网站图标（规格 5.9，设置里开启） ----------
+
+/** 主机 → 图标的 data: 地址（界面用）；取不到的不在这里 */
+export const siteIcons = shallowRef<Record<string, string>>({})
+let iconCache: Record<string, IconEntry> = {}
+/** 上锁、关掉开关时加一，正在进行的取图标作废 */
+let iconGen = 0
+const iconQueue = new Set<string>()
+let iconWorkers = 0
+let iconSaveTimer: ReturnType<typeof setTimeout> | undefined
+
+function publishIcons() {
+  const out: Record<string, string> = {}
+  for (const [h, e] of Object.entries(iconCache)) if (e.data) out[h] = e.data
+  siteIcons.value = out
+}
+
+async function loadIcons(): Promise<void> {
+  iconCache = {}
+  if (!prefs.siteIcons) return publishIcons()
+  try {
+    const f = await readEncrypted<{ format: 1; icons: Record<string, IconEntry> }>('icons')
+    for (const [h, e] of Object.entries(f?.icons ?? {})) {
+      if (e && typeof e.at === 'number' && (e.data === undefined || (typeof e.data === 'string' && e.data.startsWith('data:image/')))) iconCache[h] = e
+    }
+  } catch { /* 缓存坏了就重新取 */ }
+  publishIcons()
+}
+
+function saveIconsSoon() {
+  clearTimeout(iconSaveTimer)
+  iconSaveTimer = setTimeout(() => {
+    if (!cipher || !prefs.siteIcons) return
+    // 只留还有条目用到的网站
+    const used = new Set(liveItemHosts())
+    const icons = Object.fromEntries(Object.entries(iconCache).filter(([h]) => used.has(h)))
+    void writeEncrypted('icons', { format: 1, icons }).catch(() => {})
+  }, 1500)
+}
+
+/** 条目第一个网址的主机（列表头像用的就是它） */
+function liveItemHosts(): string[] {
+  const out = new Set<string>()
+  for (const it of Object.values(vault.value.items)) {
+    if (it.deleted || !it.urls?.[0]) continue
+    const h = hostOf(it.urls[0])
+    if (h) out.add(h)
+  }
+  return [...out]
+}
+
+/** 列表里看得到的网站：没取过（或该重新取）的排进队列，最多同时取 3 个，只在主界面里取 */
+export function wantIcons(hosts: string[]): void {
+  if (!prefs.siteIcons || !cipher || lifecycleMode !== 'main') return
+  const now = Date.now()
+  for (const h of hosts) if (iconHostAllowed(h) && iconDue(iconCache[h], now)) iconQueue.add(h)
+  while (iconWorkers < 3 && iconQueue.size) void iconWorker(iconGen)
+}
+
+async function iconWorker(gen: number): Promise<void> {
+  iconWorkers++
+  try {
+    while (iconQueue.size && gen === iconGen) {
+      const host = iconQueue.values().next().value as string
+      iconQueue.delete(host)
+      const data = await fetchIcon(host, http)
+      if (gen !== iconGen || !cipher) return
+      const old = iconCache[host]
+      iconCache = { ...iconCache, [host]: { data: data ?? old?.data, at: Date.now() } }
+      if (data && data !== old?.data) publishIcons()
+      saveIconsSoon()
+    }
+  } finally {
+    iconWorkers--
+  }
+}
+
+function stopIcons() {
+  iconGen++
+  iconQueue.clear()
+  clearTimeout(iconSaveTimer)
+  iconCache = {}
+  siteIcons.value = {}
+}
+
+/** 开关网站图标。关掉时删掉本机的图标缓存 */
+export async function setSiteIcons(on: boolean): Promise<void> {
+  prefs.siteIcons = on
+  await savePrefs()
+  stopIcons()
+  if (on) {
+    await loadIcons()
+    wantIcons(liveItemHosts())
+  } else await files.remove('icons').catch(() => {})
 }
 
 // ---------- 自动填充（规格 5.8） ----------
@@ -574,9 +745,7 @@ export async function setBackend(cfg: BackendConfig | null): Promise<void> {
     const p = await probeRemote(remote)
     if (p.initialized) {
       const info = await remote.get(KEY_INFO)
-      if (!info || parseKeyInfo(info).recipient !== keys.recipient) {
-        throw new Error('这里已经有另一个保险库（密钥不同）。请换一个空的仓库或路径前缀，或者在本机抹掉数据后用“加入已有保险库”')
-      }
+      if (!info || parseKeyInfo(info).recipient !== keys.recipient) throw new OtherVaultError()
     } else {
       const wrapped = (await files.read('identity'))!
       await initRemote(remote, { ...keys, wrapped })
@@ -585,15 +754,84 @@ export async function setBackend(cfg: BackendConfig | null): Promise<void> {
   app.backend = cfg
   syncState = null
   await files.remove('syncstate')
+  resetSyncStatus()
+  app.sync.pending = !!cfg
+  await persistConfig()
+  await persistVault()
+  if (cfg) await syncNow()
+}
+
+/** 开启同步时，那里已经有另一个保险库（密钥不同）。界面上让用户输入它的主密码，用 joinOtherVault 加入并合并 */
+export class OtherVaultError extends Error {
+  constructor() {
+    super('这里已经有另一个保险库（密钥不同）')
+  }
+}
+
+function resetSyncStatus() {
   app.sync.devices = []
   app.sync.problems = []
   app.sync.error = ''
   app.sync.errorKind = ''
   app.sync.tokenExpires = 0
-  app.sync.pending = !!cfg
+}
+
+/**
+ * 换成云端那个保险库的密钥（重新加入、加入另一个保险库）：本机的条目用新密钥重新加密，再同步合并过去，不丢。
+ *
+ * 防止中途被杀导致本机文件解不开，顺序是：
+ * 1. 关掉指纹（指纹里存的是旧密钥）；
+ * 2. 本机保险库、同步配置先加密给新旧两把公钥——此后不管磁盘上的身份密钥是哪一把都能解开；
+ * 3. 写新的身份密钥和公钥设置（两者之间被杀，下次解锁时 openWith 会补上公钥设置）；
+ * 4. 再按新密钥正常保存、同步。
+ */
+async function switchKeys(k: KeyBundle, backend: BackendConfig): Promise<void> {
+  if (!keys || !cipher) throw new Error('已上锁')
+  if (k.recipient === keys.recipient) {
+    // 其实是同一个保险库（例如云端只是改过主密码）：只更新身份密钥文件
+    await files.write('identity', k.wrapped)
+    keys = k
+  } else {
+    prefs.bioData = ''
+    await savePrefs()
+    await bioRemove()
+    await mergeFromDisk()
+    const both = [keys.recipient, k.recipient]
+    await files.write('vault', await encryptJsonTo(both, { format: FORMAT, vault: vault.value, dirty: true } satisfies LocalVaultFile))
+    await files.write('config', await encryptJsonTo(both, { backend }))
+    await files.remove('syncstate')
+    await files.write('identity', k.wrapped)
+    prefs.recipient = k.recipient
+    await savePrefs()
+    keys = k
+    cipher = new VaultCipher(k)
+    // 上锁前暂存的编辑草稿是加密给旧公钥的
+    draftStash = null
+    // 本机的使用记录、图标缓存也换成新密钥加密（写不进去只影响排序和图标）
+    await writeEncrypted('usage', { format: 1, used: usedAt.value }).catch(() => {})
+    saveIconsSoon()
+    diag('换成云端保险库的密钥')
+  }
+  prefs.keyUploadPending = false
+  await savePrefs()
+  app.backend = backend
+  syncState = null
+  resetSyncStatus()
   await persistConfig()
+  app.sync.pending = true
   await persistVault()
-  if (cfg) await syncNow()
+  app.offerBio = app.bio.available && !prefs.bioData
+  await syncNow()
+}
+
+/**
+ * 开启同步（或换位置）时那里已经有另一个保险库：用它的主密码加入，本机的条目合并过去。
+ * 以后本机的主密码就是那个保险库的主密码。
+ */
+export async function joinOtherVault(cfg: BackendConfig, passphrase: string): Promise<void> {
+  const remote = makeRemote(cfg)
+  await remote.test?.()
+  await switchKeys(await joinRemote(remote, passphrase), cfg)
 }
 
 /** 云端的保险库被删了：用本机的密钥在原处重新建立，再上传 */
@@ -610,19 +848,7 @@ export async function rebuildRemote(): Promise<void> {
  */
 export async function rejoin(passphrase: string): Promise<void> {
   if (!app.backend) return
-  const k = await joinRemote(makeRemote(app.backend), passphrase)
-  keys = k
-  cipher = new VaultCipher(k)
-  await files.write('identity', k.wrapped)
-  prefs.recipient = k.recipient
-  prefs.bioData = ''
-  await bioRemove()
-  syncState = null
-  await files.remove('syncstate')
-  await persistConfig()
-  app.sync.pending = true
-  await persistVault()
-  await syncNow()
+  await switchKeys(await joinRemote(makeRemote(app.backend), passphrase), app.backend)
 }
 
 export async function removeDevice(id: string): Promise<void> {
@@ -652,6 +878,13 @@ export async function verifyPassphrase(passphrase: string): Promise<boolean> {
     if (e instanceof WrongPassphraseError) return false
     throw e
   }
+}
+
+/** 生成加入码（同步配置用主密码加密），先核对主密码：加入码要用同一个主密码才能在新设备上解开 */
+export async function createJoinCode(passphrase: string): Promise<string> {
+  if (!keys || !app.backend) throw new Error('还没有开启同步')
+  if (!(await verifyPassphrase(passphrase))) throw new WrongPassphraseError()
+  return makeJoinCode(app.backend, passphrase)
 }
 
 export async function changeMasterPassword(oldPass: string, newPass: string): Promise<void> {

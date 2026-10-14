@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   VaultCipher, WrongPassphraseError, changePassphrase, checkPassphrase, createKeys, deviceIdOf, devicePath,
-  generatePassphrase, unwrapIdentity,
+  encryptJsonTo, generatePassphrase, unwrapIdentity,
 } from '../src/core/crypto'
+import { JOIN_PREFIX, makeJoinCode, normalizeJoinCode, readJoinCode } from '../src/core/sync/setup'
 import { utf8 } from '../src/core/bytes'
 import { PASS, WF } from './helpers'
 
@@ -76,5 +77,35 @@ describe.skipIf(!hasAge)('和 age 命令行互通（不靠 app 也能解开）',
     execFileSync('age', ['-r', k.recipient, '-o', join(dir, 'cli.age'), join(dir, 'plain.txt')])
     const back = await new VaultCipher(k).decrypt(readFileSync(join(dir, 'cli.age')))
     expect(new TextDecoder().decode(back)).toBe('from-cli')
+  })
+})
+
+describe('加入码', () => {
+  const cfg = { type: 'github', github: { owner: 'me', repo: 'jinkui-data', token: 'github_pat_test', branch: 'main', prefix: '' } }
+
+  it('用主密码加密同步配置，粘贴时带换行空格也能解开', async () => {
+    const code = await makeJoinCode(cfg, PASS, WF)
+    expect(code.startsWith(JOIN_PREFIX)).toBe(true)
+    expect(code).not.toContain('github_pat_test')
+    const pasted = `  ${code.slice(0, 30)}\n${code.slice(30)} \n`
+    expect(normalizeJoinCode(pasted)).toBe(code)
+    expect(await readJoinCode(pasted, PASS)).toEqual(cfg)
+  })
+
+  it('主密码不对、不是加入码、缺了一截都给出明白的错误', async () => {
+    const code = await makeJoinCode(cfg, PASS, WF)
+    await expect(readJoinCode(code, 'another-password')).rejects.toBeInstanceOf(WrongPassphraseError)
+    await expect(readJoinCode('github_pat_test', PASS)).rejects.toThrow('不是金匮的加入码')
+    await expect(readJoinCode(code.slice(0, code.length - 20), PASS)).rejects.toThrow()
+  })
+})
+
+describe('换密钥时同时加密给新旧两把公钥', () => {
+  it('任意一把私钥都能解开', async () => {
+    const a = await createKeys(PASS, WF)
+    const b = await createKeys(PASS + '-b', WF)
+    const bytes = await encryptJsonTo([a.recipient, b.recipient], { x: 1 })
+    expect(await new VaultCipher(a).decryptJson(bytes)).toEqual({ x: 1 })
+    expect(await new VaultCipher(b).decryptJson(bytes)).toEqual({ x: 1 })
   })
 })

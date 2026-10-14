@@ -5,10 +5,13 @@ import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import BackendForm from '../components/BackendForm.vue'
 import SyncBanner from '../components/SyncBanner.vue'
-import { app, backendTitle, removeDevice, setBackend, syncNow, toast } from '../../store'
+import {
+  OtherVaultError, app, backendTitle, copyPlain, createJoinCode, joinOtherVault, removeDevice, setBackend, syncNow, toast, vault, type BackendConfig,
+} from '../../store'
+import { liveItems } from '../../core/vault'
 import { prefs } from '../../prefs'
 import { configFrom, draftFrom } from '../backendDraft'
-import { ask } from '../dialog'
+import { ask, promptText } from '../dialog'
 import { timeAgo } from '../format'
 
 const router = useRouter()
@@ -32,6 +35,35 @@ async function save() {
     editing.value = false
     toast(app.sync.errorKind ? '已保存，但同步出错了' : '已开启同步')
   } catch (e) {
+    if (e instanceof OtherVaultError) {
+      busy.value = ''
+      await joinOther(r.cfg)
+    } else error.value = (e as Error).message
+  } finally {
+    busy.value = ''
+  }
+}
+
+/** 让浏览器先画出“正在…”再开始耗时的 scrypt */
+const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)))
+
+/** 那里已经有另一个保险库：输入它的主密码加入，本机条目合并过去（以前只能抹掉本机数据再加入，本机条目会丢） */
+async function joinOther(cfg: BackendConfig) {
+  const n = liveItems(vault.value).length
+  const p = await promptText({
+    title: '这里已经有一个保险库',
+    message: `输入它的主密码加入它，本机的${n ? ` ${n} 条` : '条目'}会合并过去，不会丢。\n加入后，这台设备的主密码就是那个保险库的主密码${prefs.bioData ? '；指纹解锁要重新开启' : ''}。\n如果不想加入，请换一个空的仓库或路径前缀。`,
+    ok: '加入并合并',
+    input: { password: true, placeholder: '那个保险库的主密码' },
+  })
+  if (!p) return
+  busy.value = '正在加入…'
+  await frame()
+  try {
+    await joinOtherVault(cfg, p)
+    editing.value = false
+    toast(app.sync.errorKind ? '已加入，但同步出错了' : '已加入，本机的条目已合并')
+  } catch (e) {
     error.value = (e as Error).message
   } finally {
     busy.value = ''
@@ -44,6 +76,29 @@ async function stop() {
   await setBackend(null)
   Object.assign(draft, draftFrom(null))
   editing.value = true
+}
+
+/** 生成好的加入码（只在这个页面上显示，离开就没了） */
+const joinCode = ref('')
+
+async function makeCode() {
+  const p = await promptText({
+    title: '生成加入码',
+    message: '加入码里有同步设置（包括 Token），用主密码加密。新手机上粘贴加入码、再输入主密码，就不用手抄 Token。',
+    ok: '生成',
+    input: { password: true, placeholder: '主密码' },
+  })
+  if (!p) return
+  busy.value = '正在生成加入码…'
+  await frame()
+  try {
+    joinCode.value = await createJoinCode(p)
+    await copyPlain(joinCode.value, '加入码')
+  } catch (e) {
+    toast((e as Error).message)
+  } finally {
+    busy.value = ''
+  }
 }
 
 async function sync() {
@@ -119,7 +174,18 @@ async function remove(id: string, name: string) {
             <button class="text-btn danger" :disabled="!!busy" @click="remove(d.id, d.name)">移除</button>
           </div>
         </div>
-        <p class="muted small hint">要在新手机上使用：装好金匮，选“加入已有保险库”，填一样的同步设置和主密码。</p>
+        <div class="group" style="margin-top: 12px">
+          <button class="row" :disabled="!!busy" @click="makeCode">
+            <Icon name="key" />
+            <span class="grow">生成加入码<span class="sub">新手机上粘贴，不用手抄 Token</span></span>
+          </button>
+        </div>
+        <div v-if="joinCode" class="note-box code-box">
+          <p>加入码已复制。发到新手机上（例如发给自己），在新手机上选“加入已有保险库 → 粘贴加入码”，再输入主密码。</p>
+          <p class="mono small code">{{ joinCode }}</p>
+          <button class="text-btn accent" @click="copyPlain(joinCode, '加入码')">再复制一次</button>
+        </div>
+        <p class="muted small hint">要在新手机上使用：装好金匮，选“加入已有保险库”，粘贴加入码，或者填一样的同步设置；再输入主密码。</p>
 
         <template v-if="app.sync.problems.length">
           <div class="group-title">解不开的文件</div>
@@ -148,5 +214,7 @@ async function remove(id: string, name: string) {
 <style scoped>
 .hint { margin: 6px 6px 0; line-height: 1.6; }
 .lead { margin: 4px 2px 8px; line-height: 1.7; }
+.code-box { margin-top: 10px; }
+.code { word-break: break-all; max-height: 6.5em; overflow: auto; margin: 8px 0; opacity: 0.8; }
 .actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 24px; }
 </style>

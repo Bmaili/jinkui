@@ -8,9 +8,11 @@ import Sheet from '../components/Sheet.vue'
 import SyncBanner from '../components/SyncBanner.vue'
 import FolderSheet from '../components/FolderSheet.vue'
 import { folderOf, liveFolders } from '../../core/folders'
-import { app, enableBio, lock, syncNow, toast, vault } from '../../store'
+import { app, enableBio, lock, siteIcons, syncNow, toast, usedAt, vault, wantIcons } from '../../store'
+import { hostOf as siteHost } from '../../core/autofill'
+import { prefs } from '../../prefs'
 import { liveItems } from '../../core/vault'
-import { initialOf, searchItems } from '../../core/search'
+import { SORT_MODES, initialOf, isSortMode, searchItems, sortItems, type SortMode } from '../../core/search'
 import { avatarColor, hostOf } from '../format'
 import { showBadge } from '../../updateService'
 
@@ -35,16 +37,47 @@ const counts = computed(() => {
   return m
 })
 const searching = computed(() => !!q.value.trim())
-/** 搜索时查全部目录；不搜索时按选中的目录筛选 */
-const items = computed(() => {
-  const pool = searching.value || sel.value === 'all' ? all.value : all.value.filter((it) => placeOf(it) === sel.value)
-  return searchItems(pool, q.value)
+
+/** 这个目录的排序方式（每个目录各自记住，只在本机） */
+const sortMode = computed<SortMode>(() => {
+  const m = prefs.sortModes[sel.value]
+  return isSortMode(m) ? m : 'name'
 })
+const sortLabel = computed(() => SORT_MODES.find((x) => x.mode === sortMode.value)!.label)
+const sorting = ref(false)
+function setSort(m: SortMode) {
+  const next = { ...prefs.sortModes }
+  if (m === 'name') delete next[sel.value]
+  else next[sel.value] = m
+  prefs.sortModes = next
+  sorting.value = false
+}
+
+/** 搜索时查全部目录、按相关度排；不搜索时按选中的目录筛选、按这个目录的排序方式 */
+const items = computed(() => {
+  if (searching.value) return searchItems(all.value, q.value)
+  const pool = sel.value === 'all' ? all.value : all.value.filter((it) => placeOf(it) === sel.value)
+  return sortItems(pool, sortMode.value, usedAt.value)
+})
+/** 网站图标（设置里开启后才有；取不到的显示首字） */
+const iconOf = (it: (typeof all.value)[number]) =>
+  prefs.siteIcons && it.type !== 'note' && it.urls?.[0] ? siteIcons.value[siteHost(it.urls[0])] : undefined
+watch([items, () => prefs.siteIcons], ([list, on]) => {
+  if (on) wantIcons(list.filter((it) => it.type !== 'note' && it.urls?.[0]).map((it) => siteHost(it.urls![0])))
+}, { immediate: true })
+
 const selName = computed(() => (sel.value === 'all' ? '全部' : sel.value === 'none' ? '未分类' : folders.value.find((f) => f.id === sel.value)?.name ?? '全部'))
 
 // 选中的目录被删了（包括别的设备上删的）：回到全部
 watch(folders, (fs) => {
   if (sel.value !== 'all' && sel.value !== 'none' && !fs.some((f) => f.id === sel.value)) sel.value = 'all'
+  // 删掉的目录不用再记排序方式
+  const gone = Object.keys(prefs.sortModes).filter((k) => vault.value.folders?.[k]?.deleted)
+  if (gone.length) {
+    const next = { ...prefs.sortModes }
+    for (const k of gone) delete next[k]
+    prefs.sortModes = next
+  }
 })
 
 function addItem() {
@@ -126,8 +159,17 @@ async function turnOnBio() {
 
       <main class="main">
         <SyncBanner />
-        <p v-if="searching" class="scope faint small">在全部目录中搜索</p>
-        <p v-else-if="sel !== 'all'" class="scope faint small">{{ selName }}</p>
+        <div v-if="prefs.autoLockSec >= 3600" class="note-box warn keep" role="status">
+          <p><Icon name="unlock" class="ki" />保持解锁中：离开 {{ prefs.autoLockSec / 3600 }} 小时内回来不用解锁，拿到这台设备的人能看到全部密码。</p>
+          <button class="text-btn accent" @click="prefs.autoLockSec = 0">改为离开即上锁</button>
+          <button class="text-btn" @click="lock()">现在上锁</button>
+        </div>
+        <div v-if="all.length" class="scope-bar">
+          <p class="scope faint small">{{ searching ? '在全部目录中搜索' : selName }}</p>
+          <button v-if="!searching" class="sort-btn" :aria-label="`排序方式：${sortLabel}`" @click="sorting = true">
+            <Icon name="sort" />{{ sortLabel }}
+          </button>
+        </div>
 
         <div v-if="!all.length" class="empty">
           <p>还没有保存任何密码。</p>
@@ -138,7 +180,8 @@ async function turnOnBio() {
         <ul v-else class="list">
           <li v-for="it in items" :key="it.id">
             <button class="entry" @click="router.push(`/item/${it.id}`)">
-              <span class="avatar" :style="{ background: avatarColor(it.title) }">
+              <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" @error="($event.target as HTMLImageElement).style.visibility = 'hidden'" /></span>
+              <span v-else class="avatar" :style="{ background: avatarColor(it.title) }">
                 <Icon v-if="it.type === 'note'" name="note" />
                 <template v-else>{{ initialOf(it.title) }}</template>
               </span>
@@ -156,6 +199,16 @@ async function turnOnBio() {
 
     <button class="fab" aria-label="添加" @click="addItem"><Icon name="plus" /></button>
     <FolderSheet :open="manage" @close="manage = false" @created="(id) => (sel = id)" />
+
+    <Sheet :open="sorting" :title="`“${selName}”的排序方式`" @close="sorting = false">
+      <div class="group">
+        <button v-for="m in SORT_MODES" :key="m.mode" class="row" :aria-pressed="sortMode === m.mode" @click="setSort(m.mode)">
+          <span class="grow">{{ m.label }}<span class="sub">{{ m.hint }}</span></span>
+          <Icon v-if="sortMode === m.mode" name="check" class="on" />
+        </button>
+      </div>
+      <p class="muted small">每个目录各自记住，只影响这台设备。收藏的条目总在最前面。</p>
+    </Sheet>
 
     <Sheet :open="app.offerBio" title="开启指纹解锁？" done="以后再说" @close="app.offerBio = false">
       <p class="muted">以后打开金匮只要按一下指纹。指纹由系统的安全芯片校验，金匮接触不到指纹数据。</p>
@@ -231,7 +284,15 @@ async function turnOnBio() {
 .dir.manage svg { flex: none; width: 16px; height: 16px; }
 .dir.manage .dn { font-size: 13px; }
 .main { flex: 1; min-width: 0; padding: 0 14px 0 8px; }
-.scope { margin: 2px 4px 2px; }
+.keep { margin: 4px 0 8px; }
+.keep p { margin: 0 0 2px; line-height: 1.6; }
+.ki { width: 16px; height: 16px; margin-right: 4px; vertical-align: -3px; }
+.scope-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
+.scope { margin: 2px 4px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sort-btn { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 4px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 13px; }
+.sort-btn:active { background: var(--line); }
+.sort-btn svg { width: 15px; height: 15px; }
+.row .on { color: var(--ok); }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .entry {
@@ -259,6 +320,8 @@ async function turnOnBio() {
   font-weight: 700;
 }
 .avatar svg { width: 22px; height: 22px; }
+.avatar.site { overflow: hidden; background: #fff; border: 1px solid var(--line); }
+.avatar.site img { width: 26px; height: 26px; object-fit: contain; }
 .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .t, .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t { font-size: 16px; font-weight: 700; }

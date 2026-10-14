@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_GEN, estimateBits, generatePassword, randomInt, strengthLabel } from '../src/core/generator'
 import { exportCsv, importCsv, parseCsv, toCsv } from '../src/core/csv'
-import { initialOf, searchItems } from '../src/core/search'
+import { initialOf, searchItems, sortItems } from '../src/core/search'
+import type { Item } from '../src/core/item'
 import { createItem, emptyVault, liveItems, type VaultState } from '../src/core/vault'
 
 describe('密码生成器', () => {
@@ -89,5 +90,20 @@ describe('搜索', () => {
     expect(searchItems(all, 'xyz')).toEqual([])
     expect(initialOf(' github')).toBe('G')
     expect(initialOf('招商')).toBe('招')
+  })
+})
+
+describe('列表排序方式（1.0.7）', () => {
+  const it0 = (id: string, title: string, t: number, created: number, favorite = false) =>
+    ({ id, type: 'login', title, created, rev: { t, c: 0, d: 'A' }, ...(favorite ? { favorite: true } : {}) }) as Item
+  const items = [it0('a', '甲', 300, 10), it0('b', '乙', 100, 30), it0('c', '丙', 200, 20), it0('d', '丁', 50, 5, true)]
+  const ids = (xs: Item[]) => xs.map((x) => x.id)
+
+  it('收藏总在最前；名称、最近修改、添加时间、最近使用', () => {
+    expect(ids(sortItems(items))).toEqual(['d', 'c', 'a', 'b']) // 丙 甲 乙（拼音）
+    expect(ids(sortItems(items, 'modified'))).toEqual(['d', 'a', 'c', 'b'])
+    expect(ids(sortItems(items, 'created'))).toEqual(['d', 'b', 'c', 'a'])
+    // 没用过的排在用过的后面，按名称
+    expect(ids(sortItems(items, 'used', { b: 5, a: 9 }))).toEqual(['d', 'a', 'b', 'c'])
   })
 })

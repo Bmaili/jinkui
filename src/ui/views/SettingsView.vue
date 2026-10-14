@@ -6,7 +6,7 @@ import { autofill } from '../../platform/autofill'
 import Icon from '../components/Icon.vue'
 import Switch from '../components/Switch.vue'
 import {
-  app, backendTitle, disableBio, enableBio, expectExternal, importItems, lock, renameDevice, toast, vault, verifyPassphrase, wipeDevice,
+  app, backendTitle, disableBio, enableBio, expectExternal, importItems, lock, renameDevice, setSiteIcons, toast, vault, verifyPassphrase, wipeDevice,
 } from '../../store'
 import { prefs } from '../../prefs'
 import { BIO_REASON } from '../../platform/vaultKey'
@@ -29,7 +29,9 @@ async function refreshAutofill() {
 onMounted(refreshAutofill)
 onActivated(refreshAutofill)
 
-const LOCK_OPTS = [[0, '立即'], [30, '30 秒'], [60, '1 分钟'], [300, '5 分钟'], [900, '15 分钟']] as const
+const LOCK_OPTS = [[0, '立即'], [30, '30 秒'], [60, '1 分钟'], [300, '5 分钟'], [900, '15 分钟'], [3600, '1 小时'], [14400, '4 小时']] as const
+/** 1 小时起算“保持解锁”：首页一直显示提醒 */
+const KEEP_UNLOCKED = 3600
 const CLIP_OPTS = [[15, '15 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟'], [0, '不清空']] as const
 
 const syncSub = computed(() => {
@@ -63,9 +65,33 @@ function next(opts: readonly (readonly [number, string])[], cur: number): number
   const i = opts.findIndex((o) => o[0] === cur)
   return opts[(i + 1) % opts.length][0]
 }
-const cycleLock = () => (prefs.autoLockSec = next(LOCK_OPTS, prefs.autoLockSec))
+async function cycleLock() {
+  let v = next(LOCK_OPTS, prefs.autoLockSec)
+  // 第一次切到“保持解锁”的时长时说清楚风险；不同意就跳回“立即”
+  if (v >= KEEP_UNLOCKED && prefs.autoLockSec < KEEP_UNLOCKED) {
+    const ok = await ask({
+      title: `离开 ${label(LOCK_OPTS, v)} 内都不用解锁？`,
+      message: '适合没有指纹、又要频繁使用的平板。这段时间里拿到这台设备的人可以直接看到全部密码。\n系统把金匮从后台清掉后仍要重新解锁。首页会一直提醒你现在是保持解锁的状态。',
+      ok: '保持解锁',
+    })
+    if (!ok) v = 0
+  }
+  prefs.autoLockSec = v
+}
 const cycleClip = () => (prefs.clipboardSec = next(CLIP_OPTS, prefs.clipboardSec))
 const label = (opts: readonly (readonly [number, string])[], v: number) => opts.find((o) => o[0] === v)?.[1] ?? `${v} 秒`
+
+async function toggleIcons(on: boolean) {
+  if (on) {
+    const ok = await ask({
+      title: '显示网站图标？',
+      message: '金匮会直接连接条目网址所在的网站（例如 github.com）去取它的图标，网站能看到这台设备在取图标。\n不经过任何第三方图标服务；内网地址不会去取。图标加密存在本机，不同步。',
+      ok: '开启',
+    })
+    if (!ok) return
+  }
+  await setSiteIcons(on)
+}
 
 async function rename() {
   const n = await promptText({ title: '本机名称', message: '在其他设备的设备列表、历史版本里显示。', input: { value: prefs.deviceName } })
@@ -179,7 +205,7 @@ async function wipe() {
         </div>
         <button class="row" @click="cycleLock">
           <Icon name="clock" />
-          <span class="grow">自动上锁<span class="sub">{{ prefs.autoLockSec ? '离开 app 多久后上锁（点按切换）' : '回到桌面或切到别的 app 就上锁（点按切换）' }}</span></span>
+          <span class="grow">自动上锁<span class="sub">{{ prefs.autoLockSec >= KEEP_UNLOCKED ? '保持解锁：离开这么久以内回来不用解锁（点按切换）' : prefs.autoLockSec ? '离开 app 多久后上锁（点按切换）' : '回到桌面或切到别的 app 就上锁（点按切换）' }}</span></span>
           <span class="val">{{ label(LOCK_OPTS, prefs.autoLockSec) }}</span>
         </button>
         <div class="row">
@@ -201,6 +227,15 @@ async function wipe() {
           <Icon name="lock" />
           <span class="grow">立即上锁</span>
         </button>
+      </div>
+
+      <div class="group-title">显示</div>
+      <div class="group">
+        <div class="row">
+          <Icon name="globe" />
+          <span class="grow">显示网站图标<span class="sub">{{ prefs.siteIcons ? '直接向条目网址的网站取图标，缓存加密存在本机' : '关闭：显示标题的第一个字' }}</span></span>
+          <Switch :model-value="prefs.siteIcons" label="显示网站图标" @update:model-value="toggleIcons" />
+        </div>
       </div>
 
       <div class="group-title">数据</div>

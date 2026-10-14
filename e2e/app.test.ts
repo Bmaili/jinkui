@@ -3,7 +3,7 @@
  * 截图在 e2e/out/，亮色和暗色各一份。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { startGitHubMock, type GitHubMock } from '../tests/mocks/githubServer'
 import { serveDist } from './serve'
@@ -483,8 +483,10 @@ describe('金匮', () => {
     await back(p)
     await p.waitForSelector('text=已上锁')
     await p.close()
-    // 改回“立即”
+    // 改回“立即”：经过 1 小时时会问要不要保持解锁，取消就回到“立即”
     for (let i = 0; i < 4; i++) await a.click('text=自动上锁')
+    await a.waitForSelector('text=离开 1 小时 内都不用解锁？')
+    await a.click('.dlg .btns >> text=取消')
     await a.waitForSelector('.val:text-is("立即")')
   })
 
@@ -512,6 +514,226 @@ describe('金匮', () => {
     await a.goto(`${site.url}#/`)
     await waitSynced(a)
     expect(await a.locator('text=GitHub Token 还有').count()).toBe(0)
+  })
+})
+
+describe('金匮 1.0.7', () => {
+  const C_PASS = 'tablet-only-password'
+  let a: Page
+  let b: Page
+  let c: Page
+  afterEach(async (t) => {
+    if (t.task.result?.state !== 'fail') return
+    for (const [n, p] of [['a', a], ['b', b], ['c', c]] as const) await p?.screenshot({ path: `${OUT}/FAIL7-${n}-${t.task.name.slice(0, 6)}.png` }).catch(() => {})
+  })
+
+  async function newVault(p: Page) {
+    await p.click('text=新建保险库')
+    await fillBackend(p)
+    await p.click('text=下一步')
+    await p.waitForSelector('#mp1')
+    await p.fill('#mp1', PASS)
+    await p.fill('#mp2', PASS)
+    await p.click('text=创建保险库')
+    await p.waitForSelector('.search', { timeout: 60000 })
+  }
+
+  async function addEntry(p: Page, title: string, url?: string) {
+    await p.goto(p.url().replace(/#.*$/, '#/edit'))
+    await p.fill('#e-title', title)
+    await p.fill('#e-pw', 'pw-' + title)
+    if (url) await p.fill('[aria-label="网址 1"]', url)
+    await p.click('.save')
+    await p.waitForSelector('text=历史版本')
+  }
+
+  const home = (p: Page) => p.goto(p.url().replace(/#.*$/, '#/'))
+  const setHidden = (p: Page, hidden: boolean) =>
+    p.evaluate((h) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => h })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }, hidden)
+  const away = (p: Page) => setHidden(p, true)
+  const back = (p: Page) => setHidden(p, false)
+  const titles = (p: Page) => p.locator('.entry .t').allInnerTexts()
+  const rail = async (p: Page) => (await p.locator('.rail .dir:not(.manage) .dn').allInnerTexts()).filter((n) => n !== '未分类')
+
+  it('准备：A 在新的仓库里建保险库，有两个目录', async () => {
+    gh.files.clear()
+    ;({ page: a } = await phone())
+    await newVault(a)
+    await addEntry(a, '乙网站')
+    await addEntry(a, '丙网站')
+    await addEntry(a, '甲网站', 'https://github.com')
+    await home(a)
+    await a.click('[aria-label="管理目录"]')
+    for (const n of ['工作', '生活', '银行']) {
+      await a.fill('[aria-label="新目录的名字"]', n)
+      await a.click('.add .solid-btn')
+      await a.waitForSelector(`.sheet >> text=${n}`)
+    }
+    await a.click('.sheet .head .text-btn')
+    await a.click('.rail >> text=全部')
+    expect(await rail(a)).toEqual(['全部', '工作', '生活', '银行'])
+    await waitSynced(a)
+  })
+
+  it('目录拖动排序，同步到另一台设备', async () => {
+    await a.click('[aria-label="管理目录"]')
+    // 等面板滑上来停稳了再量位置
+    await a.locator('[aria-label="拖动“银行”排序"]').hover()
+    await a.waitForTimeout(400)
+    const from = (await a.locator('[aria-label="拖动“银行”排序"]').boundingBox())!
+    const to = (await a.locator('[aria-label="拖动“工作”排序"]').boundingBox())!
+    await a.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+    await a.mouse.down()
+    for (let i = 1; i <= 8; i++) await a.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + ((to.y - from.y) * i) / 8)
+    await shot(a, 'folders-drag')
+    await a.mouse.up()
+    await a.waitForFunction(() => document.querySelector('.sheet .row .grow')?.textContent?.startsWith('银行'))
+    await a.click('.sheet .head .text-btn')
+    expect(await rail(a)).toEqual(['全部', '银行', '工作', '生活'])
+    await shot(a, 'folders-ordered')
+    await waitSynced(a)
+
+    ;({ page: b } = await phone('dark'))
+    await b.click('text=加入已有保险库')
+    await fillBackend(b)
+    await b.click('text=下一步')
+    await b.fill('#mpj', PASS)
+    await b.click('.actions .solid-btn')
+    await b.waitForSelector('.entry', { timeout: 60000 })
+    await b.waitForSelector('.rail >> text=银行')
+    expect(await rail(b)).toEqual(['全部', '银行', '工作', '生活'])
+  })
+
+  it('每个目录各自的排序方式，只在本机', async () => {
+    expect(await titles(a)).toEqual(['丙网站', '甲网站', '乙网站'])
+    // 打开过“乙网站”：最近使用排第一
+    await a.click('.entry >> text=乙网站')
+    await a.waitForSelector('text=历史版本')
+    await home(a)
+    await a.click('.sort-btn')
+    await shot(a, 'sort-sheet')
+    await a.click('.sheet .row >> text=最近使用')
+    await a.waitForSelector('.sort-btn >> text=最近使用')
+    expect((await titles(a))[0]).toBe('乙网站')
+    await a.click('.sort-btn')
+    await a.click('.sheet .row >> text=添加时间')
+    await a.waitForSelector('.sort-btn >> text=添加时间')
+    expect(await titles(a)).toEqual(['甲网站', '丙网站', '乙网站'])
+    await shot(a, 'home-sorted')
+    // 别的目录还是按名称；另一台设备不受影响
+    await a.click('.rail >> text=工作')
+    await a.waitForSelector('.sort-btn >> text=名称')
+    await a.click('.rail >> text=全部')
+    await a.waitForSelector('.sort-btn >> text=添加时间')
+    expect(await b.locator('.sort-btn >> text=名称').count()).toBe(1)
+  })
+
+  it('保持解锁：首页一直提醒；离开回来不用解锁', async () => {
+    await a.goto(`${site.url}#/settings`)
+    for (let i = 0; i < 5; i++) await a.click('text=自动上锁')
+    await a.waitForSelector('text=离开 1 小时 内都不用解锁？')
+    await a.click('.dlg .btns >> text=保持解锁')
+    await a.waitForSelector('.val:text-is("1 小时")')
+    await home(a)
+    await a.waitForSelector('text=保持解锁中')
+    await shot(a, 'home-keep-unlocked')
+    await away(a)
+    await back(a)
+    expect(await a.locator('text=已上锁').count()).toBe(0)
+    await a.click('text=改为离开即上锁')
+    expect(await a.locator('text=保持解锁中').count()).toBe(0)
+  })
+
+  it('网站图标默认关；开启要确认，内网和取不到的显示首字', async () => {
+    await a.goto(`${site.url}#/settings`)
+    await a.click('[aria-label="显示网站图标"]')
+    await a.waitForSelector('text=显示网站图标？')
+    await shot(a, 'icons-confirm')
+    // 模拟 github.com 有图标；其他网站一律取不到（测试环境不连外网）
+    const png = readFileSync('android/app/src/main/res/mipmap-hdpi/ic_launcher.png')
+    await a.context().route(/^https:\/\//, (r) =>
+      r.request().url() === 'https://github.com/apple-touch-icon.png'
+        ? r.fulfill({ status: 200, body: png, headers: { 'Content-Type': 'image/png', 'Access-Control-Allow-Origin': '*' } })
+        : r.fulfill({ status: 404, body: 'not found', headers: { 'Access-Control-Allow-Origin': '*' } }),
+    )
+    await a.click('.dlg .btns >> text=开启')
+    await a.waitForSelector('[aria-label="显示网站图标"][aria-checked="true"]')
+    await home(a)
+    await a.waitForSelector('.entry .avatar.site img')
+    // 没有网址的还是首字
+    expect(await a.locator('.entry .avatar.site').count()).toBe(1)
+    await shot(a, 'home-icons')
+    await a.goto(`${site.url}#/settings`)
+    await a.click('[aria-label="显示网站图标"]')
+    await a.waitForSelector('[aria-label="显示网站图标"][aria-checked="false"]')
+    await home(a)
+  })
+
+  it('先只存本机用了一阵，再接到已有的保险库：输入它的主密码，本机条目合并过去', async () => {
+    ;({ page: c } = await phone())
+    await c.click('text=新建保险库')
+    await c.click('text=先不同步，只存在本机')
+    await c.click('.dlg .btns >> text=只存本机')
+    await c.fill('#mp1', C_PASS)
+    await c.fill('#mp2', C_PASS)
+    await c.click('text=创建保险库')
+    await c.waitForSelector('.search', { timeout: 60000 })
+    await addEntry(c, '平板上的条目')
+    await c.goto(`${site.url}#/settings/sync`)
+    await fillBackend(c)
+    await c.click('.actions .solid-btn')
+    await c.waitForSelector('text=这里已经有一个保险库')
+    await shot(c, 'join-other-vault')
+    await c.fill('.dlg input', PASS)
+    await c.click('.dlg .btns >> text=加入并合并')
+    await c.waitForSelector('text=立即同步', { timeout: 60000 })
+    await home(c)
+    await waitSynced(c)
+    expect((await titles(c)).sort()).toEqual(['丙网站', '平板上的条目', '甲网站', '乙网站'].sort())
+    // 以后用云端保险库的主密码解锁
+    await c.click('[aria-label="上锁"]')
+    await c.fill('[aria-label="主密码"]', C_PASS)
+    await c.click('button:has-text("解锁")')
+    await c.waitForSelector('text=主密码不对', { timeout: 30000 })
+    await c.fill('[aria-label="主密码"]', PASS)
+    await c.click('button:has-text("解锁")')
+    await c.waitForSelector('.entry', { timeout: 30000 })
+    // A 同步后也有平板上的条目
+    await a.goto(`${site.url}#/settings/sync`)
+    await a.click('text=立即同步')
+    await home(a)
+    await a.waitForSelector('.entry >> text=平板上的条目', { timeout: 30000 })
+  })
+
+  it('加入码：一台设备生成，新设备粘贴后只要输主密码', async () => {
+    await a.goto(`${site.url}#/settings/sync`)
+    await a.click('text=生成加入码')
+    await a.fill('.dlg input', 'wrong-password-x')
+    await a.click('.dlg .btns >> text=生成')
+    await a.waitForSelector('text=主密码不对', { timeout: 30000 })
+    await a.click('text=生成加入码')
+    await a.fill('.dlg input', PASS)
+    await a.click('.dlg .btns >> text=生成')
+    await a.waitForSelector('.code-box .code', { timeout: 30000 })
+    const code = await a.locator('.code-box .code').innerText()
+    expect(code.startsWith('jinkui-join:')).toBe(true)
+    expect(code).not.toContain('github_pat_test')
+    await shot(a, 'join-code')
+
+    const { page: d } = await phone('dark')
+    await d.click('text=加入已有保险库')
+    await d.fill('[aria-label="加入码"]', code.slice(0, 40) + '\n' + code.slice(40))
+    await shot(d, 'join-with-code-dark')
+    await d.click('text=下一步')
+    await d.fill('#mpj', PASS)
+    await d.click('.actions .solid-btn')
+    await d.waitForSelector('.entry', { timeout: 60000 })
+    await waitSynced(d)
+    expect((await titles(d)).length).toBe(4)
+    await d.close()
   })
 })
 

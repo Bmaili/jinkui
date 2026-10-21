@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SecureClipboardPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
         registerPlugin(AutofillPlugin.class);
+        registerPlugin(AppIconsPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

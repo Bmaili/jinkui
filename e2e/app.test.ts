@@ -737,6 +737,226 @@ describe('金匮 1.0.7', () => {
   })
 })
 
+describe('金匮 1.0.8：条目图标、自动填充按目录筛选', () => {
+  let a: Page
+  let b: Page
+  afterEach(async (t) => {
+    if (t.task.result?.state !== 'fail') return
+    for (const [n, p] of [['a', a], ['b', b]] as const) await p?.screenshot({ path: `${OUT}/FAIL8-${n}-${t.task.name.slice(0, 6)}.png` }).catch(() => {})
+  })
+  const PNG = readFileSync('android/app/src/main/res/mipmap-hdpi/ic_launcher.png')
+  const PNG_URL = `data:image/png;base64,${PNG.toString('base64')}`
+  const home = (p: Page) => p.goto(p.url().replace(/#.*$/, '#/'))
+  const APPS = [{ packageName: 'com.icbc', label: '工商银行' }, { packageName: 'com.tencent.mm', label: '微信' }, { packageName: 'com.eg.notes', label: '便签' }]
+
+  /** 模拟原生的 AppIcons 插件（手机上已装的 app） */
+  const mockApps = (p: Page) =>
+    p.evaluate(([apps, png]) => {
+      ;(window as unknown as Record<string, unknown>).__appIconsMock = {
+        listApps: async () => ({ apps }),
+        icons: async ({ packages }: { packages: string[] }) => ({ icons: Object.fromEntries(packages.filter((x) => apps.some((a) => a.packageName === x)).map((x) => [x, png])) }),
+      }
+    }, [APPS, PNG_URL] as const)
+
+  async function addEntry(p: Page, title: string, dir?: string) {
+    await p.goto(p.url().replace(/#.*$/, '#/edit'))
+    await p.fill('#e-title', title)
+    await p.fill('#e-user', `${title}@me.com`).catch(() => {})
+    await p.fill('#e-pw', 'pw-' + title)
+    if (dir) await p.click(`.folders >> text=${dir}`)
+    await p.click('.save')
+    await p.waitForSelector('text=历史版本')
+  }
+
+  async function openIconSheet(p: Page, title: string) {
+    await home(p)
+    await p.click(`.entry >> text=${title}`)
+    await p.click('.icon-row')
+    await p.waitForSelector('.sheet >> text=设置图标')
+    await p.waitForTimeout(450)
+  }
+  const hasIcon = (p: Page, title: string) => p.locator(`.entry:has-text("${title}") .avatar.full img`).count()
+
+  it('准备：A 建保险库，三个目录、几个条目', async () => {
+    gh.files.clear()
+    ;({ page: a } = await phone())
+    await a.click('text=新建保险库')
+    await fillBackend(a)
+    await a.click('text=下一步')
+    await a.waitForSelector('#mp1')
+    await a.fill('#mp1', PASS)
+    await a.fill('#mp2', PASS)
+    await a.click('text=创建保险库')
+    await a.waitForSelector('.search', { timeout: 60000 })
+    await a.click('[aria-label="管理目录"]')
+    for (const n of ['工作', '银行', '生活']) {
+      await a.fill('[aria-label="新目录的名字"]', n)
+      await a.click('.add .solid-btn')
+      await a.waitForSelector(`.sheet >> text=${n}`)
+    }
+    await a.click('.sheet .head .text-btn')
+    for (const [t, d] of [['工商银行', '银行'], ['招商银行', '银行'], ['公司邮箱', '工作'], ['微信', '生活'], ['旧论坛', undefined]] as const) await addEntry(a, t, d)
+    await home(a)
+    await a.click('.rail >> text=全部')
+  })
+
+  it('设置图标：输入网址向网站取、从已装的 app 选、从相册选、恢复默认', async () => {
+    await mockApps(a)
+    // 只有 www 上有首页，图标写在首页里
+    await a.context().route(/^https:\/\//, (r) => {
+      const u = r.request().url()
+      const cors = { 'Access-Control-Allow-Origin': '*' }
+      if (u === 'https://www.icbc.com.cn/') return r.fulfill({ status: 200, body: '<html><head><link rel="icon" href="/img/logo.png" sizes="72x72"></head></html>', headers: { ...cors, 'Content-Type': 'text/html' } })
+      if (u === 'https://www.icbc.com.cn/img/logo.png') return r.fulfill({ status: 200, body: PNG, headers: { ...cors, 'Content-Type': 'image/png' } })
+      return r.fulfill({ status: 404, body: 'not found', headers: cors })
+    })
+
+    await openIconSheet(a, '工商银行')
+    await shot(a, 'icon-sheet')
+    await a.click('.sheet .row >> text=从网站获取')
+    await a.fill('#icon-site', 'icbc.com.cn')
+    await a.click('.sheet .line .solid-btn')
+    await a.waitForSelector('.cand img')
+    await shot(a, 'icon-site')
+    await a.click('.cand .solid-btn')
+    await a.waitForSelector('.icon-row .avatar.full img')
+    await home(a)
+    expect(await hasIcon(a, '工商银行')).toBe(1)
+
+    // 取不到时说明原因
+    await openIconSheet(a, '旧论坛')
+    await a.click('.sheet .row >> text=从网站获取')
+    await a.fill('#icon-site', 'old-bbs.cn')
+    await a.click('.sheet .line .solid-btn')
+    await a.waitForSelector('.sheet .note-box.err >> text=没能从 old-bbs.cn 取到图标')
+    await a.click('.sheet .head .text-btn')
+
+    // 从已装的 app 选：名字和标题对得上的排在最前
+    await openIconSheet(a, '招商银行')
+    await a.click('.sheet .row >> text=从手机上的 app 选')
+    await a.waitForSelector('.apps .ai img')
+    await shot(a, 'icon-apps')
+    await a.click('.apps .app >> text=便签')
+    await a.waitForSelector('.icon-row .avatar.full img')
+
+    // 从相册选
+    await openIconSheet(a, '公司邮箱')
+    const [fc] = await Promise.all([a.waitForEvent('filechooser'), a.click('.sheet .row >> text=从相册选图片')])
+    await fc.setFiles('android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png')
+    await a.waitForSelector('.icon-row .avatar.full img')
+
+    // 恢复默认
+    await openIconSheet(a, '公司邮箱')
+    await a.click('.sheet .row >> text=恢复默认')
+    await a.waitForSelector('.icon-row .avatar:not(.full)')
+    await home(a)
+    await shot(a, 'home-custom-icons')
+    expect(await hasIcon(a, '工商银行')).toBe(1)
+    expect(await hasIcon(a, '招商银行')).toBe(1)
+    expect(await hasIcon(a, '公司邮箱')).toBe(0)
+    await waitSynced(a)
+  })
+
+  it('自定义图标同步到另一台设备', async () => {
+    ;({ page: b } = await phone('dark'))
+    await b.click('text=加入已有保险库')
+    await fillBackend(b)
+    await b.click('text=下一步')
+    await b.fill('#mpj', PASS)
+    await b.click('.actions .solid-btn')
+    await b.waitForSelector('.entry', { timeout: 60000 })
+    await b.waitForSelector('.entry:has-text("工商银行") .avatar.full img')
+    expect(await hasIcon(b, '招商银行')).toBe(1)
+    expect(await hasIcon(b, '公司邮箱')).toBe(0)
+    await shot(b, 'home-custom-icons-dark')
+    // 浏览器里没有原生插件：不显示“从手机上的 app 选”
+    await openIconSheet(b, '工商银行')
+    expect(await b.locator('.sheet .row >> text=从手机上的 app 选').count()).toBe(0)
+    await shot(b, 'icon-sheet-dark')
+    await b.click('.sheet .head .text-btn')
+  })
+
+  async function autofillWindow(base: Page, req: Record<string, unknown>): Promise<Page> {
+    const p = await base.context().newPage()
+    p.on('pageerror', (e) => console.error('自动填充窗口错误', e.message))
+    await p.addInitScript(([r, apps, png]) => {
+      const w = window as unknown as Record<string, unknown>
+      w.__autofillMock = {
+        status: async () => ({ supported: true, enabled: false }),
+        openSettings: async () => ({ opened: false }),
+        disable: async () => {},
+        getRequest: async () => r,
+        fill: async (o: unknown) => void (w.__afResult = { kind: 'fill', ...(o as object) }),
+        close: async () => void (w.__afResult = { kind: 'close' }),
+      }
+      w.__appIconsMock = {
+        listApps: async () => ({ apps }),
+        icons: async ({ packages }: { packages: string[] }) => ({ icons: Object.fromEntries(packages.filter((x) => (apps as { packageName: string }[]).some((a) => a.packageName === x)).map((x) => [x, png])) }),
+      }
+    }, [req, APPS, PNG_URL] as const)
+    await p.goto(site.url)
+    await p.waitForSelector('.af')
+    await p.waitForSelector('text=已上锁')
+    await p.fill('[aria-label="主密码"]', PASS)
+    await p.click('button:has-text("解锁")')
+    await p.waitForSelector('.page .target', { timeout: 30000 })
+    return p
+  }
+  const result = (p: Page) => p.waitForFunction(() => (window as unknown as { __afResult?: unknown }).__afResult).then((h) => h.jsonValue())
+  const afTitles = (p: Page) => p.locator('.list').last().locator('.entry .t').allInnerTexts()
+
+  it('自动填充：按目录筛选，推荐不受影响；记住上次的目录；搜索时显示所在目录', async () => {
+    const req = { mode: 'fill', packageName: 'com.tencent.mm', appLabel: '微信', hasUsername: true, hasPassword: true }
+    let p = await autofillWindow(a, req)
+    await p.waitForSelector('.dirs')
+    const chips = (await p.locator('.dirs .chip').allInnerTexts()).map((x) => x.replace(/\s+/g, ''))
+    expect(chips).toEqual(['全部5', '工作1', '生活1', '银行2', '未分类1'])  // 和首页一样，没拖动过时按拼音
+    // 第一次在微信里填：没有推荐，按目录筛
+    await p.click('.dirs .chip >> text=银行')
+    expect(await afTitles(p)).toEqual(['工商银行', '招商银行'])
+    expect(await p.locator('.list .entry:has-text("工商银行") .avatar.full img').count()).toBe(1)
+    // 搜索查全部目录，副标题带上目录
+    await p.fill('[aria-label="搜索"]', '银行')
+    await p.waitForSelector('.group-title:text-is("搜索结果")')
+    expect(await p.locator('.entry:has-text("招商银行") .s').textContent()).toContain('· 银行')
+    // 搜到微信，选它并记住这个 app
+    await p.fill('[aria-label="搜索"]', '微信')
+    await p.click('.entry >> text=微信')
+    expect(await result(p)).toMatchObject({ kind: 'fill', password: 'pw-微信' })
+    await p.close()
+
+    // 下次打开：还是“银行”目录；微信排在推荐里，不受目录影响
+    p = await autofillWindow(a, req)
+    await p.waitForSelector('.dirs .chip.on >> text=银行')
+    await p.waitForSelector('.group-title:text-is("推荐")')
+    expect(await p.locator('.list').first().textContent()).toContain('微信')
+    expect(await afTitles(p)).toEqual(['工商银行', '招商银行'])
+    await shot(p, 'autofill-folders')
+    await p.click('.dirs .chip >> text=全部')
+    expect(await afTitles(p)).toEqual(['工商银行', '公司邮箱', '旧论坛', '招商银行'])
+    await p.close()
+
+    // 记住过 app 的条目，首页自动用 app 的图标（A 回到前台时读到自动填充窗口写的修改）
+    await a.goto(`${site.url}#/`)
+    await a.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    // （前面选过相册图片，这一次离开不上锁；回到前台照样合并磁盘上的修改）
+    await a.waitForSelector('.entry:has-text("微信") .avatar.full img', { timeout: 30000 })
+    await shot(a, 'home-app-icon')
+  })
+
+  it('自动填充窗口（暗色）', async () => {
+    const p = await autofillWindow(b, { mode: 'fill', packageName: 'com.android.chrome', appLabel: 'Chrome', webDomain: 'icbc.com.cn', hasUsername: true, hasPassword: true })
+    await p.waitForSelector('.dirs')
+    await shot(p, 'autofill-folders-dark')
+    await p.close()
+  })
+})
+
 async function waitSyncedAfterEdit(page: Page) {
   await page.goto(page.url().replace(/#.*$/, '#/'))
   await waitSynced(page)

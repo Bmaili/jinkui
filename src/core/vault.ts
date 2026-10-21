@@ -4,6 +4,7 @@
 import { HISTORY_MAX, contentOf, isItem, sameContent, snapshotOf, type Item, type ItemContent } from './item'
 import { mergeItems, normalizeHistory } from './merge'
 import { maxRev, nextRev, type Rev } from './rev'
+import { isItemIcon, iconOfItem, mergeIcons, putIcon, type ItemIcons } from './itemIcons'
 import { ORDER_STEP, checkFolderName, hasOrder, isFolder, liveFolders, mergeFolders, putFolder, type Folder, type Folders } from './folders'
 
 /** 当前格式版本。只能加字段，不能改已有字段的含义；真要不兼容地改才加一 */
@@ -14,6 +15,8 @@ export interface VaultState {
   items: Record<string, Item>
   /** 目录（1.0.2 起，规格 4.5）。旧数据没有这个字段 */
   folders?: Folders
+  /** 条目的自定义图标（1.0.8 起，规格 4.6）。旧数据没有这个字段 */
+  icons?: ItemIcons
   /** 未知的顶层字段原样保留 */
   [extra: string]: unknown
 }
@@ -58,6 +61,16 @@ export function parseVault(json: unknown): { state: VaultState; skipped: string[
     }
     state.folders = folders
   }
+  if (v.icons !== undefined) {
+    const icons: ItemIcons = {}
+    if (v.icons && typeof v.icons === 'object' && !Array.isArray(v.icons)) {
+      for (const [k, i] of Object.entries(v.icons)) {
+        if (isItemIcon(i) && i.id === k) icons[k] = i
+        else skipped.push(`icon:${k}`)
+      }
+    }
+    state.icons = icons
+  }
   return { state, skipped }
 }
 
@@ -66,6 +79,8 @@ export function mergeVaults(local: VaultState, remote: VaultState): VaultState {
   const out: VaultState = { ...remote, ...local, format: FORMAT, items: mergeItems(local.items, remote.items) }
   if (local.folders || remote.folders) out.folders = mergeFolders(local.folders, remote.folders)
   else delete out.folders
+  if (local.icons || remote.icons) out.icons = mergeIcons(local.icons, remote.icons)
+  else delete out.icons
   return out
 }
 
@@ -77,6 +92,7 @@ export function vaultMaxRev(state: VaultState): Rev | null {
       for (const h of it.history ?? []) yield h.rev
     }
     for (const f of Object.values(state.folders ?? {})) yield f.rev
+    for (const i of Object.values(state.icons ?? {})) yield i.rev
   }
   return maxRev(revs())
 }
@@ -158,7 +174,9 @@ export function restoreItem(state: VaultState, id: string, ctx: EditCtx): VaultS
 export function purgeItem(state: VaultState, id: string, ctx: EditCtx): VaultState {
   const prev = existing(state, id)
   if (prev.purged) return state
-  return bump(state, prev, { id, created: prev.created, type: prev.type, title: '', deleted: true, purged: true }, ctx)
+  const s = bump(state, prev, { id, created: prev.created, type: prev.type, title: '', deleted: true, purged: true }, ctx)
+  // 图标也一起清掉（加删除标记，别的设备不会把它带回来）
+  return iconOfItem(s.icons, id) ? setItemIcon(s, id, null, ctx) : s
 }
 
 /** 恢复到历史里的某个版本（作为一次新的修改，当前值进历史） */
@@ -187,7 +205,29 @@ export function gcTombstones(state: VaultState, now: number = Date.now()): Vault
     }
     folders = kept
   }
-  return changed ? { ...state, items, ...(folders ? { folders } : {}) } : state
+  let icons = state.icons
+  if (icons) {
+    const kept: ItemIcons = {}
+    for (const [id, i] of Object.entries(icons)) {
+      // 删除标记过期；条目已经彻底删除或被清掉了（别的设备不知道已删除时可能又给它设了图标）
+      if ((i.deleted && i.rev.t < now - TOMBSTONE_TTL) || !items[id] || items[id].purged) changed = true
+      else kept[id] = i
+    }
+    icons = kept
+  }
+  return changed ? { ...state, items, ...(folders ? { folders } : {}), ...(icons ? { icons } : {}) } : state
+}
+
+// ---------- 条目图标（规格 4.6） ----------
+
+/** 设置条目的自定义图标；data 为 null 表示恢复默认。和现在一样时不产生修改 */
+export function setItemIcon(state: VaultState, id: string, data: string | null, ctx: EditCtx): VaultState {
+  const it = existing(state, id)
+  if (data !== null && it.purged) throw new Error('条目已彻底删除')
+  if (data !== null && !isItemIcon({ id, data, rev: { t: 0, c: 0, d: 'x' } })) throw new Error('图片格式不对或太大')
+  const cur = state.icons?.[id]
+  if (data === null ? !cur || cur.deleted : cur?.data === data && !cur.deleted) return state
+  return { ...state, icons: putIcon(state.icons, id, data, vaultMaxRev(state), ctx.device, ctx.now) }
 }
 
 // ---------- 目录（规格 4.5） ----------

@@ -78,7 +78,7 @@
     <!-- 应用内更新：下载好新版后调起系统安装界面（用户仍要点“安装”） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- 自动填充时显示 app 的名字（安卓 11 起要声明才能看到其他 app） -->
+    <!-- 自动填充时显示 app 的名字、条目显示 app 图标（安卓 11 起要声明才能看到其他 app；只看桌面上有图标的） -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />

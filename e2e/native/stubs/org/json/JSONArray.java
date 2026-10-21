@@ -1,1 +1,1 @@
-package org.json; public class JSONArray { private final java.util.List<Object> l = new java.util.ArrayList<>(); public JSONArray put(Object o){ l.add(o); return this; } public int length(){ return l.size(); } }
+package org.json; public class JSONArray { private final java.util.List<Object> l = new java.util.ArrayList<>(); public JSONArray put(Object o){ l.add(o); return this; } public int length(){ return l.size(); } public String getString(int i) throws JSONException { Object o=l.get(i); if(o==null) throw new JSONException(); return o.toString(); } }

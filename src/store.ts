@@ -25,10 +25,11 @@ import type { DeviceInfo } from './core/sync/deviceFile'
 import { initRemote, joinRemote, makeJoinCode, probeRemote, uploadWrappedKey, type Probe } from './core/sync/setup'
 import {
   FORMAT, FormatTooNewError, createFolder, createItem, deleteFolder, deleteItem, emptyVault, gcTombstones, mergeVaults, moveFolder, parseVault,
-  purgeItem, renameFolder, restoreItem, revertTo, updateItem, type VaultState,
+  purgeItem, renameFolder, restoreItem, revertTo, setItemIcon, updateItem, type VaultState,
 } from './core/vault'
 import { liveFolders } from './core/folders'
 import { fetchIcon, iconDue, iconHostAllowed, type IconEntry } from './core/icons'
+import { appIcons } from './platform/appIcons'
 import { hostOf } from './core/autofill'
 import { http } from './core/http'
 import type { ImportedItem } from './core/csv'
@@ -257,6 +258,7 @@ export function lock(): void {
   vault.value = emptyVault()
   usedAt.value = {}
   stopIcons()
+  stopAppIcons()
   app.phase = 'locked'
 }
 
@@ -567,6 +569,55 @@ export async function setSiteIcons(on: boolean): Promise<void> {
     await loadIcons()
     wantIcons(liveItemHosts())
   } else await files.remove('icons').catch(() => {})
+}
+
+/** 直接向这个网站取一次图标（设置图标时手动输入网址用，不受“显示网站图标”开关限制）。取不到返回 null */
+export async function fetchSiteIcon(host: string): Promise<string | null> {
+  return iconHostAllowed(host) ? fetchIcon(host, http) : null
+}
+
+// ---------- 条目的自定义图标（规格 4.6），同步 ----------
+
+/** 设置条目的图标（已经缩成小图的 data 地址）；null 恢复默认 */
+export async function setIcon(id: string, data: string | null): Promise<void> {
+  await commit(setItemIcon(vault.value, id, data, ctx()))
+}
+
+// ---------- app 图标（规格 5.9）：自动填充记住过 app 的条目，在本机读 app 的图标 ----------
+
+/** 包名 → 图标 data 地址（只在内存里，上锁清掉） */
+export const appIconMap = shallowRef<Record<string, string>>({})
+const appIconTried = new Set<string>()
+const appIconPending = new Set<string>()
+let appIconTimer: ReturnType<typeof setTimeout> | undefined
+let appIconGen = 0
+
+/** 列表里看得到的条目记住过的 app：没取过的攒一下一起取（本机读，很快） */
+export function wantAppIcons(pkgs: string[]): void {
+  if (!prefs.appIcons || app.phase !== 'unlocked' || !appIcons.available()) return
+  for (const p of pkgs) {
+    if (typeof p !== 'string' || !p || appIconTried.has(p)) continue
+    appIconTried.add(p)
+    appIconPending.add(p)
+  }
+  if (!appIconPending.size || appIconTimer) return
+  const gen = appIconGen
+  appIconTimer = setTimeout(async () => {
+    appIconTimer = undefined
+    const list = [...appIconPending]
+    appIconPending.clear()
+    const got = await appIcons.icons(list)
+    if (gen === appIconGen && Object.keys(got).length) appIconMap.value = { ...appIconMap.value, ...got }
+  }, 0)
+}
+
+function stopAppIcons() {
+  appIconGen++
+  clearTimeout(appIconTimer)
+  appIconTimer = undefined
+  appIconTried.clear()
+  appIconPending.clear()
+  appIconMap.value = {}
 }
 
 // ---------- 自动填充（规格 5.8） ----------

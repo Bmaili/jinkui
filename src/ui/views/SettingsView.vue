@@ -236,7 +236,13 @@ async function wipe() {
           <span class="grow">显示网站图标<span class="sub">{{ prefs.siteIcons ? '直接向条目网址的网站取图标，缓存加密存在本机' : '关闭：显示标题的第一个字' }}</span></span>
           <Switch :model-value="prefs.siteIcons" label="显示网站图标" @update:model-value="toggleIcons" />
         </div>
+        <div class="row">
+          <Icon name="device" />
+          <span class="grow">显示 app 图标<span class="sub">自动填充记住过 app 的条目，用这个 app 的图标；在本机读取，不联网</span></span>
+          <Switch v-model="prefs.appIcons" label="显示 app 图标" />
+        </div>
       </div>
+      <p class="faint small hint">单个条目可以在详情页的“图标”里换成任意图片，会同步到其他设备。</p>
 
       <div class="group-title">数据</div>
       <div class="group">
@@ -291,6 +297,7 @@ async function wipe() {
 </template>
 
 <style scoped>
+.hint { margin: -4px 8px 0; line-height: 1.6; }
 .val { flex: none; color: var(--muted); font-size: 14px; }
 .dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--danger); vertical-align: 2px; }
 .row > svg.danger { color: var(--danger); }

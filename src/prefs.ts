@@ -29,6 +29,10 @@ export interface Prefs {
   sortModes: Record<string, string>
   /** 显示网站图标（1.0.7 起，默认关）：直接向条目网址的网站取图标，缓存加密存在本机 */
   siteIcons: boolean
+  /** 自动填充记住过 app 的条目显示 app 图标（1.0.8 起，默认开）：在本机读，不联网 */
+  appIcons: boolean
+  /** 自动填充窗口上次选的目录（1.0.8 起，只在本机）：'all' 全部、'none' 未分类、其他是目录ID */
+  autofillFolder: string
 }
 
 const KEY = 'jinkui.prefs.v1'
@@ -46,6 +50,8 @@ export const defaults = (): Prefs => ({
   autoUpdate: true,
   sortModes: {},
   siteIcons: false,
+  appIcons: true,
+  autofillFolder: 'all',
 })
 
 export const prefs = reactive<Prefs>(defaults())

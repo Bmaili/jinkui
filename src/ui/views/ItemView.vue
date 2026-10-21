@@ -1,11 +1,13 @@
 <script setup lang="ts">
 /** 条目详情：复制用户名、密码，打开网址，查看备注和自定义字段 */
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
+import ItemAvatar from '../components/ItemAvatar.vue'
+import IconSheet from '../components/IconSheet.vue'
 import { App as CapApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
-import { app, copyPlain, copySecret, forgetApp, markUsed, removeItem, saveItem, toast, vault } from '../../store'
+import { app, appIconMap, copyPlain, copySecret, forgetApp, markUsed, removeItem, saveItem, toast, vault, wantAppIcons } from '../../store'
 import { prefs } from '../../prefs'
 import { folderOf } from '../../core/folders'
 import { ask } from '../dialog'
@@ -40,6 +42,8 @@ async function copyAndReturn() {
 }
 
 const apps = computed(() => (Array.isArray(item.value?.apps) ? (item.value!.apps as string[]) : []))
+watch(apps, (a) => wantAppIcons(a), { immediate: true })
+const iconSheet = ref(false)
 
 async function unlinkApp(pkg: string) {
   if (!item.value) return
@@ -134,7 +138,8 @@ async function del() {
         <div class="group-title">自动填充时优先推荐的 app</div>
         <div class="group">
           <div v-for="p in apps" :key="p" class="row">
-            <Icon name="device" />
+            <img v-if="appIconMap[p]" class="app-ic" :src="appIconMap[p]" alt="" />
+            <Icon v-else name="device" />
             <span class="grow mono small">{{ p }}</span>
             <button class="icon-btn sm" :aria-label="`取消关联 ${p}`" @click="unlinkApp(p)"><Icon name="close" /></button>
           </div>
@@ -142,6 +147,11 @@ async function del() {
       </template>
 
       <div class="group">
+        <button v-if="!item.deleted" class="row icon-row" @click="iconSheet = true">
+          <ItemAvatar :item="item" :size="28" />
+          <span class="grow">图标<span class="sub">换成 app、网站的图标或相册图片</span></span>
+          <Icon name="right" />
+        </button>
         <button class="row" @click="router.push(`/item/${item.id}/history`)">
           <Icon name="history" />
           <span class="grow">历史版本<span class="sub">{{ item.history?.length ? `${item.history.length} 个以前的版本` : '还没有以前的版本' }}</span></span>
@@ -155,6 +165,7 @@ async function del() {
       </p>
 
       <button v-if="!item.deleted" class="text-btn danger del" @click="del"><Icon name="trash" />删除</button>
+      <IconSheet :open="iconSheet" :item="item" @close="iconSheet = false" />
     </div>
   </div>
 </template>
@@ -173,4 +184,6 @@ async function del() {
 .del { display: inline-flex; align-items: center; gap: 6px; margin: 8px 0 20px; padding: 0 10px; }
 .del svg { width: 18px; height: 18px; }
 :deep(.filled) { fill: currentColor; }
+.app-ic { flex: none; width: 24px; height: 24px; border-radius: 7px; }
+.icon-row { gap: 12px; }
 </style>

@@ -17,6 +17,7 @@ public class AutofillActivity extends BridgeActivity {
         registerPlugin(VaultKeyPlugin.class);
         registerPlugin(PrivacyScreenPlugin.class);
         registerPlugin(AutofillPlugin.class);
+        registerPlugin(AppIconsPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -8,6 +8,7 @@ public class PluginCall {
   public Double getDouble(String k,Double d){ Object v=args.get(k); return v==null?d:((Number)v).doubleValue(); }
   public Integer getInt(String k,Integer d){ Object v=args.get(k); return v==null?d:((Number)v).intValue(); }
   public Boolean getBoolean(String k,Boolean d){ Object v=args.get(k); return v==null?d:(Boolean)v; }
+  public JSArray getArray(String k){ Object v=args.get(k); return v instanceof JSArray ? (JSArray)v : null; }
   public void reject(String m){ reject(m,null); }
   public void reject(String m,String c){ error=m; code=c; latch.countDown(); }
   public void resolve(){ result=new JSObject(); latch.countDown(); }

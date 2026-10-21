@@ -2,7 +2,7 @@
 /**
  * 自动填充窗口（规格 5.8）。系统在用户点“用金匮填充”或“保存到金匮”时打开。
  * 先解锁（自动弹指纹），然后：
- * - 填充：推荐对得上的条目，也可以搜全部；点一条就把账号密码交回系统，窗口关掉，回到原来的 app。
+ * - 填充：推荐对得上的条目，也可以按目录筛选、搜全部；点一条就把账号密码交回系统，窗口关掉，回到原来的 app。
  *   在 app 里（不是网页）选过一次，默认记住这个 app，下次直接推荐。
  * - 保存：新建一条，或更新已有条目的密码。
  */
@@ -10,20 +10,19 @@ import { computed, reactive, ref, watch } from 'vue'
 import Icon from './components/Icon.vue'
 import Switch from './components/Switch.vue'
 import Dialog from './components/Dialog.vue'
+import ItemAvatar from './components/ItemAvatar.vue'
 import LockView from './views/LockView.vue'
-import { app, markUsed, rememberApp, saveCredential, siteIcons, syncBeforeClose, vault } from '../store'
+import { app, markUsed, rememberApp, saveCredential, syncBeforeClose, usedAt, vault } from '../store'
 import { prefs } from '../prefs'
 import { autofill, type AutofillRequest } from '../platform/autofill'
 import { baseDomain, hostOf, matchItems, remembersApp } from '../core/autofill'
 import { liveItems } from '../core/vault'
-import { initialOf, searchItems } from '../core/search'
+import { isSortMode, searchItems, sortItems, type SortMode } from '../core/search'
+import { folderOf, liveFolders } from '../core/folders'
 import { generatePassword } from '../core/generator'
 import type { Item } from '../core/item'
-import { avatarColor } from './format'
 
 const props = defineProps<{ req: AutofillRequest }>()
-/** 主界面取过的网站图标（这个窗口只读缓存，不去网上取） */
-const iconOf = (it: Item) => (prefs.siteIcons && it.urls?.[0] ? siteIcons.value[hostOf(it.urls[0])] : undefined)
 const req = props.req
 const isWeb = !!req.webDomain
 const target = req.webDomain ? hostOf(req.webDomain) || req.webDomain : req.appLabel || req.packageName || '这个 app'
@@ -35,11 +34,55 @@ const remember = ref(!isWeb && !!req.packageName)
 
 const logins = computed(() => liveItems(vault.value).filter((i) => i.type !== 'note'))
 const suggested = computed(() => matchItems(logins.value, { packageName: req.packageName, webDomain: req.webDomain }))
+
+// ---------- 按目录筛选（和首页一样的目录；推荐不受影响） ----------
+
+const folders = computed(() => liveFolders(vault.value.folders))
+/** 每条实际所在的目录（目录被删了算未分类） */
+const placeOf = (it: Item) => folderOf(vault.value.folders, it.folder)?.id ?? 'none'
+const counts = computed(() => {
+  const m = new Map<string, number>()
+  for (const it of logins.value) m.set(placeOf(it), (m.get(placeOf(it)) ?? 0) + 1)
+  return m
+})
+/** 记住上次选的目录（只在本机）；目录被删了、或者这个目录里没有账号了，回到全部 */
+const sel = computed<string>({
+  get: () => {
+    const f = prefs.autofillFolder
+    if (f === 'all') return 'all'
+    if (f === 'none') return folders.value.length && counts.value.get('none') ? 'none' : 'all'
+    return folders.value.some((x) => x.id === f) ? f : 'all'
+  },
+  set: (v) => void (prefs.autofillFolder = v),
+})
+const selName = computed(() => (sel.value === 'none' ? '未分类' : folders.value.find((f) => f.id === sel.value)?.name ?? ''))
+/** 每个目录在首页选的排序方式（本机设置，两边一样） */
+const sortMode = computed<SortMode>(() => {
+  const m = prefs.sortModes[sel.value]
+  return isSortMode(m) ? m : 'name'
+})
+
 const others = computed(() => {
   if (q.value.trim()) return searchItems(logins.value, q.value)
   const s = new Set(suggested.value.map((i) => i.id))
-  return searchItems(logins.value.filter((i) => !s.has(i.id)), '')
+  const pool = logins.value.filter((i) => !s.has(i.id) && (sel.value === 'all' || placeOf(i) === sel.value))
+  return sortItems(pool, sortMode.value, usedAt.value)
 })
+const listTitle = computed(() => {
+  if (q.value.trim()) return '搜索结果'
+  if (sel.value !== 'all') return suggested.value.length ? `${selName.value}（推荐的除外）` : selName.value
+  return suggested.value.length ? '其他' : '全部'
+})
+const emptyText = computed(() => {
+  if (q.value.trim()) return '没有找到'
+  if (sel.value !== 'all') return '这个目录里没有其他账号'
+  return suggested.value.length ? '' : '还没有保存任何账号'
+})
+/** 搜索或看全部时，副标题在用户名后面带上所在的目录，方便分清同名的账号 */
+function dirOf(it: Item): string {
+  if (!folders.value.length || (sel.value !== 'all' && !q.value.trim())) return ''
+  return folderOf(vault.value.folders, it.folder)?.name ?? ''
+}
 
 autofill.log(`网页启动：${req.mode === 'save' ? '保存' : '填充'} 账号框=${req.hasUsername ? '有' : '无'} 密码框=${req.hasPassword ? '有' : '无'}`)
 watch(() => app.phase, (ph) => {
@@ -207,27 +250,37 @@ function generate() {
         </div>
         <p v-if="error" class="note-box err">{{ error }}</p>
 
+        <nav v-if="folders.length && !q.trim()" class="dirs" aria-label="按目录筛选">
+          <button class="chip" :class="{ on: sel === 'all' }" :aria-pressed="sel === 'all'" @click="sel = 'all'">全部<span class="n">{{ logins.length }}</span></button>
+          <button v-for="f in folders" :key="f.id" class="chip" :class="{ on: sel === f.id }" :aria-pressed="sel === f.id" @click="sel = f.id">
+            {{ f.name }}<span class="n">{{ counts.get(f.id) ?? 0 }}</span>
+          </button>
+          <button v-if="counts.get('none')" class="chip" :class="{ on: sel === 'none' }" :aria-pressed="sel === 'none'" @click="sel = 'none'">
+            未分类<span class="n">{{ counts.get('none') }}</span>
+          </button>
+        </nav>
+
         <template v-if="!q.trim() && suggested.length">
           <div class="group-title">推荐</div>
           <ul class="list">
             <li v-for="it in suggested" :key="it.id">
               <button class="entry" :disabled="busy" @click="pick(it, '推荐')">
-                <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" /></span><span v-else class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
+                <ItemAvatar :item="it" />
                 <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
               </button>
             </li>
           </ul>
         </template>
-        <div class="group-title">{{ q.trim() ? '搜索结果' : suggested.length ? '其他' : '全部' }}</div>
+        <div class="group-title">{{ listTitle }}</div>
         <ul class="list">
           <li v-for="it in others" :key="it.id">
             <button class="entry" :disabled="busy" @click="pick(it, q.trim() ? '搜索' : '其他')">
-              <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" /></span><span v-else class="avatar" :style="{ background: avatarColor(it.title) }">{{ initialOf(it.title) }}</span>
-              <span class="text"><span class="t">{{ it.title }}</span><span class="s mono">{{ it.username || '（没有用户名）' }}</span></span>
+              <ItemAvatar :item="it" />
+              <span class="text"><span class="t">{{ it.title }}</span><span class="s"><span class="mono">{{ it.username || '（没有用户名）' }}</span><template v-if="dirOf(it)"> · {{ dirOf(it) }}</template></span></span>
             </button>
           </li>
         </ul>
-        <p v-if="!others.length" class="muted small center">{{ q.trim() ? '没有找到' : '还没有保存任何账号' }}</p>
+        <p v-if="!others.length && emptyText" class="muted small center">{{ emptyText }}</p>
         <button class="solid-btn block ghost new" @click="creating = true"><Icon name="plus" />新建一条并填充</button>
       </template>
     </div>
@@ -254,9 +307,11 @@ function generate() {
 .list { list-style: none; margin: 0; padding: 0; }
 .entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 62px; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
 .entry:active { background: var(--line); }
-.avatar { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 11px; color: #fbf8f1; font-weight: 700; }
-.avatar.site { overflow: hidden; background: #fff; border: 1px solid var(--line); }
-.avatar.site img { width: 26px; height: 26px; object-fit: contain; }
+/* 目录：一行横着滑，不换行 */
+.dirs { display: flex; gap: 8px; overflow-x: auto; margin: 10px -16px 0; padding: 2px 16px 6px; scrollbar-width: none; }
+.dirs::-webkit-scrollbar { display: none; }
+.dirs .chip { flex: none; white-space: nowrap; }
+.dirs .n { opacity: 0.6; font-size: 12px; }
 .text { display: flex; flex-direction: column; min-width: 0; }
 .t, .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t { font-weight: 700; }

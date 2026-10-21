@@ -1,7 +1,7 @@
 /**
  * 网站图标（1.0.7 起，设置里开启，默认关）。规格 5.9。
  *
- * 只直接向条目网址所在的网站要图标（/apple-touch-icon.png、/favicon.ico），不用 Google、DuckDuckGo 这类
+ * 只直接向条目网址所在的网站要图标（/apple-touch-icon.png、首页声明的图标、/favicon.ico），不用 Google、DuckDuckGo 这类
  * 图标服务：那等于把“在哪些网站有账号”的完整清单交给第三方。内网地址（IP、localhost、.local 等）不请求。
  * 只收认得出的位图（PNG、ICO、JPEG、GIF、WebP），不收 SVG、HTML；太大的不要。
  */
@@ -27,13 +27,54 @@ export function iconHostAllowed(host: string): boolean {
   return /^[a-z0-9.-]+$/.test(h) && !h.startsWith('.') && !h.startsWith('-') && !h.includes('..')
 }
 
-/** 依次尝试的地址：本主机的大图标、小图标；子域名没有时退到主域名 */
-export function iconUrls(host: string): string[] {
+/**
+ * 依次去问的主机：本主机；子域名时退到主域名，否则试 www. 主机（很多国内网站只在 www 上有网页）。
+ * 每个主机依次试：/apple-touch-icon.png（大图）、首页里声明的图标（1.0.8 起）、/favicon.ico。
+ */
+export function iconHosts(host: string): string[] {
   const base = baseDomain(host)
-  const out = [`https://${host}/apple-touch-icon.png`, `https://${host}/favicon.ico`]
-  if (base && base !== host) out.push(`https://${base}/favicon.ico`)
-  else out.push(`https://www.${host}/favicon.ico`)
-  return out
+  return [host, base && base !== host ? base : `www.${host}`]
+}
+
+export interface IconLink {
+  url: string
+  /** 声明的边长；没写时按类型估计（apple-touch-icon 180，其他 32） */
+  size: number
+}
+
+const ATTR_RE = /([a-zA-Z:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g
+
+/**
+ * 从首页 HTML 里找图标声明（<link rel="icon" / "shortcut icon" / "apple-touch-icon" …>），
+ * 换成 https 的绝对地址，跳过 SVG 和内网地址，按清晰程度排好（最接近 128 像素的在前），最多 3 个。
+ */
+export function parseIconLinks(html: string, pageUrl: string): IconLink[] {
+  const head = html.slice(0, 300_000).split(/<\/head\s*>/i)[0]
+  const out: IconLink[] = []
+  const seen = new Set<string>()
+  for (const m of head.matchAll(/<link\b[^>]*>/gi)) {
+    const attrs: Record<string, string> = {}
+    for (const a of m[0].matchAll(ATTR_RE)) attrs[a[1].toLowerCase()] = (a[2] ?? a[3] ?? a[4] ?? '').trim()
+    const rel = (attrs.rel ?? '').toLowerCase().split(/\s+/)
+    if (!rel.some((r) => r === 'icon' || r.startsWith('apple-touch-icon'))) continue
+    const type = (attrs.type ?? '').toLowerCase()
+    if (!attrs.href || type.includes('svg')) continue
+    let u: URL
+    try {
+      u = new URL(attrs.href.replace(/&amp;/g, '&'), pageUrl)
+    } catch {
+      continue
+    }
+    if (u.protocol === 'http:') u.protocol = 'https:'
+    if (u.protocol !== 'https:' || /\.svgz?$/i.test(u.pathname) || !iconHostAllowed(u.hostname)) continue
+    const url = u.toString()
+    if (seen.has(url)) continue
+    seen.add(url)
+    const declared = Math.max(0, ...(attrs.sizes ?? '').toLowerCase().split(/\s+/).map((x) => Number(x.split('x')[0]) || 0))
+    out.push({ url, size: declared || (rel.some((r) => r.startsWith('apple-touch-icon')) ? 180 : 32) })
+  }
+  const score = (l: IconLink) => Math.abs(Math.log2(l.size / 128))
+  return out.sort((a, b) => score(a) - score(b)).slice(0, 3)
 }
 
 /** 按文件头认出图片类型；认不出（HTML 错误页、SVG 等）返回 null */
@@ -48,18 +89,46 @@ export function sniffImage(b: Uint8Array): string | null {
   return null
 }
 
+async function getImage(url: string, http: HttpImpl): Promise<string | null> {
+  try {
+    const res = await http({ url, responseType: 'bytes', timeoutMs: 8000, headers: { Accept: 'image/*' } })
+    if (!res.ok) return null
+    const bytes = res.bytes()
+    if (bytes.length > MAX_ICON_BYTES) return null
+    const mime = sniffImage(bytes)
+    return mime ? `data:${mime};base64,${toBase64(bytes)}` : null
+  } catch {
+    return null // 网络错误，试下一个
+  }
+}
+
+async function getLinks(host: string, http: HttpImpl): Promise<IconLink[]> {
+  const page = `https://${host}/`
+  try {
+    const res = await http({ url: page, responseType: 'text', timeoutMs: 8000, headers: { Accept: 'text/html' } })
+    return res.ok ? parseIconLinks(res.text(), page) : []
+  } catch {
+    return []
+  }
+}
+
 /** 取一个网站的图标，返回 data: 地址；都取不到返回 null。不抛错 */
 export async function fetchIcon(host: string, http: HttpImpl): Promise<string | null> {
   if (!iconHostAllowed(host)) return null
-  for (const url of iconUrls(host)) {
-    try {
-      const res = await http({ url, responseType: 'bytes', timeoutMs: 8000, headers: { Accept: 'image/*' } })
-      if (!res.ok) continue
-      const bytes = res.bytes()
-      if (bytes.length > MAX_ICON_BYTES) continue
-      const mime = sniffImage(bytes)
-      if (mime) return `data:${mime};base64,${toBase64(bytes)}`
-    } catch { /* 网络错误，试下一个 */ }
+  for (const h of iconHosts(host)) {
+    if (!iconHostAllowed(h)) continue
+    const hit = (await getImage(`https://${h}/apple-touch-icon.png`, http))
+      ?? (await firstOf((await getLinks(h, http)).map((l) => l.url), http))
+      ?? (await getImage(`https://${h}/favicon.ico`, http))
+    if (hit) return hit
+  }
+  return null
+}
+
+async function firstOf(urls: string[], http: HttpImpl): Promise<string | null> {
+  for (const u of urls) {
+    const d = await getImage(u, http)
+    if (d) return d
   }
   return null
 }

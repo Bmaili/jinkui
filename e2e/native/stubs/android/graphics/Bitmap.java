@@ -1,0 +1,1 @@
+package android.graphics; public class Bitmap { public enum Config { ARGB_8888 } public enum CompressFormat { PNG, JPEG, WEBP } public static Bitmap createBitmap(int w,int h,Config c){ return new Bitmap(); } public boolean compress(CompressFormat f,int q,java.io.OutputStream o){ return true; } public void recycle(){} }

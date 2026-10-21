@@ -7,13 +7,14 @@ import Icon from '../components/Icon.vue'
 import Sheet from '../components/Sheet.vue'
 import SyncBanner from '../components/SyncBanner.vue'
 import FolderSheet from '../components/FolderSheet.vue'
+import ItemAvatar from '../components/ItemAvatar.vue'
 import { folderOf, liveFolders } from '../../core/folders'
-import { app, enableBio, lock, siteIcons, syncNow, toast, usedAt, vault, wantIcons } from '../../store'
+import { app, enableBio, lock, syncNow, toast, usedAt, vault, wantIcons } from '../../store'
 import { hostOf as siteHost } from '../../core/autofill'
 import { prefs } from '../../prefs'
 import { liveItems } from '../../core/vault'
-import { SORT_MODES, initialOf, isSortMode, searchItems, sortItems, type SortMode } from '../../core/search'
-import { avatarColor, hostOf } from '../format'
+import { SORT_MODES, isSortMode, searchItems, sortItems, type SortMode } from '../../core/search'
+import { hostOf } from '../format'
 import { showBadge } from '../../updateService'
 
 defineOptions({ name: 'HomeView' })
@@ -59,9 +60,7 @@ const items = computed(() => {
   const pool = sel.value === 'all' ? all.value : all.value.filter((it) => placeOf(it) === sel.value)
   return sortItems(pool, sortMode.value, usedAt.value)
 })
-/** 网站图标（设置里开启后才有；取不到的显示首字） */
-const iconOf = (it: (typeof all.value)[number]) =>
-  prefs.siteIcons && it.type !== 'note' && it.urls?.[0] ? siteIcons.value[siteHost(it.urls[0])] : undefined
+/** 网站图标（设置里开启后才有）：列表里看得到的条目才去取 */
 watch([items, () => prefs.siteIcons], ([list, on]) => {
   if (on) wantIcons(list.filter((it) => it.type !== 'note' && it.urls?.[0]).map((it) => siteHost(it.urls![0])))
 }, { immediate: true })
@@ -180,11 +179,7 @@ async function turnOnBio() {
         <ul v-else class="list">
           <li v-for="it in items" :key="it.id">
             <button class="entry" @click="router.push(`/item/${it.id}`)">
-              <span v-if="iconOf(it)" class="avatar site"><img :src="iconOf(it)" alt="" @error="($event.target as HTMLImageElement).style.visibility = 'hidden'" /></span>
-              <span v-else class="avatar" :style="{ background: avatarColor(it.title) }">
-                <Icon v-if="it.type === 'note'" name="note" />
-                <template v-else>{{ initialOf(it.title) }}</template>
-              </span>
+              <ItemAvatar :item="it" />
               <span class="text">
                 <span class="t">{{ it.title || '未命名' }}</span>
                 <span class="s mono">{{ subtitle(it) }}</span>
@@ -308,20 +303,6 @@ async function turnOnBio() {
   text-align: left;
 }
 .entry:active { background: var(--line); }
-.avatar {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  color: #fbf8f1;
-  font-size: 18px;
-  font-weight: 700;
-}
-.avatar svg { width: 22px; height: 22px; }
-.avatar.site { overflow: hidden; background: #fff; border: 1px solid var(--line); }
-.avatar.site img { width: 26px; height: 26px; object-fit: contain; }
 .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .t, .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t { font-size: 16px; font-weight: 700; }

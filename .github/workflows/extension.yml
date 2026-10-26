@@ -1,0 +1,99 @@
+# 电脑端 Chrome 扩展（extension/）。
+# 推送到 main：单元测试 → 类型检查 → 打包扩展，zip 作为构建产物保存（只检查，不发布）。
+# 推送到 release-ext 分支：版本号取已有最大的 ext-v1.0.N 再加一，打包后发布到 Releases（tag ext-v1.0.N）。
+#
+# 注意：扩展的发布绝不能成为仓库的“最新发布”（make_latest: false）。手机 app 的应用内更新读的是
+# releases/latest，要求 tag 是 v1.0.N、附件是 .apk；扩展的发布变成 latest，手机就找不到更新了。
+name: Chrome 扩展
+
+on:
+  push:
+    branches: [main, release-ext]
+    # 不按路径过滤：release-ext 分支新建时和 main 指向同一个提交，带路径过滤时整次运行会被跳过
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 计算版本号
+        id: ver
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/release-ext" ]; then
+            last=$(git tag -l 'ext-v1.0.*' | sed -n 's/^ext-v1\.0\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1)
+            n=$(( ${last:-0} + 1 ))
+            echo "EXT_VERSION=1.0.$n" >> "$GITHUB_ENV"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "发布扩展 1.0.$n"
+          else
+            # Chrome 的版本号只能是数字；检查用的包用 0.0.运行序号
+            echo "EXT_VERSION=0.0.$(( GITHUB_RUN_NUMBER % 60000 + 1 ))" >> "$GITHUB_ENV"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元测试和类型检查
+        run: |
+          npm test
+          npm run typecheck
+
+      - name: 打包扩展
+        id: zip
+        run: |
+          node extension/build.mjs
+          out="jinkui-chrome-${EXT_VERSION}.zip"
+          (cd extension/dist && zip -qr "../../$out" .)
+          ls -l "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - name: 保存构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: jinkui-chrome-${{ env.EXT_VERSION }}
+          path: ${{ steps.zip.outputs.file }}
+
+      - name: 整理更新说明
+        id: notes
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          {
+            echo 'text<<NOTES_EOF'
+            git log -1 --format=%B | grep -v -E '^(Claude-Session|Co-Authored-By):' || true
+            echo
+            echo '---'
+            echo '电脑端 Chrome 扩展。第一次安装：解压 zip 到一个固定的文件夹，打开 chrome://extensions，打开右上角的“开发者模式”，点“加载已解压的扩展程序”选这个文件夹。'
+            echo '更新：解压后覆盖原来的文件夹，再在 chrome://extensions 里点金匮的“重新加载”。不要“移除”扩展：移除会删掉这台电脑上的数据（云端和手机不受影响，可以重新加入）。'
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 发布到 Releases（不设为最新发布）
+        if: steps.ver.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ext-v${{ env.EXT_VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: 金匮 电脑端 ${{ env.EXT_VERSION }}
+          make_latest: false
+          files: ${{ steps.zip.outputs.file }}
+          body: ${{ steps.notes.outputs.text }}

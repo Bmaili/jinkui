@@ -1,5 +1,6 @@
 // 由 design/icon.svg 渲染安卓图标和启动图（用 Playwright 的 Chromium）。
 // 用法：PLAYWRIGHT_BROWSERS_PATH=<浏览器目录> node design/render.mjs
+//       只生成电脑端扩展的图标：node design/render.mjs extension
 import { readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 
@@ -18,6 +19,19 @@ async function render(file, w, h, body, transparent = false) {
 }
 
 const icon = (size) => svg.replace('<svg ', `<svg width="${size}" height="${size}" style="display:block" `)
+
+/** 圆角方形、宣纸底、主体放大一些（和旧系统的桌面图标一样） */
+const tile = (n, radius) => {
+  const big = n * 1.45
+  return `<div style="position:relative;width:${n}px;height:${n}px;background:${PAPER};border-radius:${radius};overflow:hidden"><div style="position:absolute;left:${(n - big) / 2}px;top:${(n - big) / 2}px">${icon(big)}</div></div>`
+}
+
+if (process.argv.includes('extension')) {
+  for (const n of [16, 32, 48, 128]) await render(`extension/public/icons/${n}.png`, n, n, tile(n, `${n * 0.18}px`), true)
+  await browser.close()
+  console.log('扩展图标已生成')
+  process.exit(0)
+}
 
 for (const [d, s] of Object.entries(DPI)) {
   // 自适应图标的前景层（108dp，透明底；底色在 values/ic_launcher_background.xml）

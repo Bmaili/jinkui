@@ -1,6 +1,6 @@
 # 给 AI 的项目说明
 
-“金匮”是一个安卓密码管理器（包名 `app.jinkui.local`，尚未发布），全部代码由 AI 编写。需求与技术规格见 `SPEC.md`，用户文档见 `README.md`。和用户交流用中文。
+“金匮”是一个安卓密码管理器（包名 `app.jinkui.local`，尚未发布），另有电脑端 Chrome 扩展（`extension/`，复用 `src/core`，见 SPEC 第 9 节），全部代码由 AI 编写。需求与技术规格见 `SPEC.md`，用户文档见 `README.md`。和用户交流用中文。
 
 ## 协作方式
 
@@ -30,6 +30,7 @@ bash e2e/native/compile.sh   # 用桩类编译全部原生代码（没有安卓 
 bash e2e/native/run.sh       # 应用内更新的原生下载逻辑测试
 PLAYWRIGHT_BROWSERS_PATH=<浏览器目录> node design/render.mjs   # 由 design/icon.svg 重新生成图标和启动图
 npm run cap:sync             # 构建并同步到 android/
+npm run ext:build            # 打包电脑端扩展到 extension/dist（e2e/extension.test.ts 要先打包；Playwright 要完整的 Chromium，不是 headless shell）
 ```
 
 测试用很低的 scrypt 强度（`tests/helpers.ts` 的 `WF = 10`），正式是 18。`tests/crypto.test.ts` 在装了 `age` 命令行时会验证互通。
@@ -42,6 +43,7 @@ npm run cap:sync             # 构建并同步到 android/
 - 被发布的那个提交的说明就是 Release 说明：第一行写成用户能看懂的更新内容，`---` 之后的部分 app 里不显示。发布前确认最后一个提交的说明写的是这一版的更新内容。
 - 推送后用 `https://api.github.com/repos/Bmaili/jinkui/commits/<sha>/check-runs` 查构建结果，失败时看 `.../check-runs/<id>/annotations`；发布后在 `.../releases` 下载 APK，用 `keytool -printcert -jarfile` 核对签名证书 SHA-256 指纹：`FC:85:0E:0C:7B:5A:5A:5E:95:6A:30:4A:70:1C:2D:95:C9:26:FD:C0:66:B2:33:9D:1C:B6:95:90:4B:4D:A3:5A`。不一致说明签名换了，**不要让用户安装**。
 - 签名文件不在仓库里，CI 从 secrets 读取。**绝不能换签名**：换了只能卸载重装，卸载会删掉本机保险库。
+- **电脑端扩展发布**：推到 `release-ext` 分支（`git push origin main:release-ext`），`.github/workflows/extension.yml` 打包并发布 `ext-v1.0.N`。扩展的发布必须 `make_latest: false`：成了“最新发布”，手机的应用内更新就找不到 APK 了。
 - 应用内更新（`updateService.ts`）读 `releases/latest`：tag 必须是 `v1.0.N`，安装包名以 `.apk` 结尾且不带 `unsigned`，要保留 GitHub 给的 `digest`（sha256）。改 workflow 的发布步骤时别破坏这几点。
 
 ## 代码结构与规格
@@ -73,3 +75,6 @@ npm run cap:sync             # 构建并同步到 android/
 | 在后台弹指纹框 | 系统会立刻取消，回来就没有指纹框。只在 `app.active` 时弹，回前台看 `foregroundTick` |
 | 真机才出现的问题 | 先看“设置 → 诊断记录”（`diag.ts`、`AutofillLog.java`），缺信息就补记录，不记任何秘密 |
 | 原生插件在 `window.__autofillMock` / `__vaultKeyMock` 有假实现 | 端到端测试用它们模拟自动填充窗口和指纹 |
+| 扩展里引用 `src/store.ts` 等依赖 Capacitor 的文件 | 只能 `import type`；扩展只用 `src/core`、`src/ui/backendDraft.ts` 和不依赖 store 的组件（Logo、Icon、Switch） |
+| 扩展后台（service worker）闲置约 30 秒就被停掉 | 内存里的东西随时会没；解锁状态放 `storage.session`，`VaultService.ready()` 醒来时恢复。不要用 setTimeout 做要按时完成的事，用 `chrome.alarms` |
+| 扩展里区分弹窗和网页发来的消息 | 看 `sender.url` 是不是本扩展的地址（在标签页里打开的扩展页面也有 `sender.tab`） |

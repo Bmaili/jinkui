@@ -11,7 +11,8 @@
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
     "e2e": "vitest run --config vitest.e2e.config.ts",
-    "cap:sync": "npm run build && npx cap sync android"
+    "cap:sync": "npm run build && npx cap sync android",
+    "ext:build": "node extension/build.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",

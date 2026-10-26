@@ -28,6 +28,8 @@
     "tests/**/*.ts",
     "e2e/**/*.ts",
     "vite.config.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "extension/**/*.ts",
+    "extension/**/*.vue"
   ]
 }

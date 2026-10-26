@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "金匮",
+  "version": "0.0.0",
+  "description": "金匮密码管理器的电脑端：在网页上填充、保存密码，和手机同步。数据加密存在你自己的 GitHub 私有仓库或阿里云 OSS。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoA0SgSKwgUNQFgGF5c02HUsMH2uKaDws5LXwUbFKXQ+QSml69pUMGAU30an3sez2/Um1SMv/NOBwPDUwLz/8SmgQVy2hLpdAvm3xUNzt/Rh9rDV9ndOK3++MNjqQ6w93i46SylRqvs7p2l+Gbayk/q8jFgPXiKosyUeiouflaUtZuMB1tlAKghdd64Lq/flT128SPTCZQRjVa47AaaxR+nmUsfuv2/jfYcaGWXAgrx5PaaygEcMiMXZWUrsMjY35/5KACiyK2D9QaFvmy9Mx1TuqT820ZvCQxavjm94woSQ7ii68j1y2952kIVV9+0am9wasSdYGz4l4uE4//6sduQIDAQAB",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "金匮",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "alarms",
+    "offscreen",
+    "clipboardWrite",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "commands": {
+    "fill": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "填充当前网页的账号密码"
+    }
+  }
+}

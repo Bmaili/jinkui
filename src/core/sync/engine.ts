@@ -57,6 +57,8 @@ export interface SyncResult {
   problems: SyncProblem[]
   /** 结构不对、没能合并的条目 id */
   skippedItems: string[]
+  /** 这次列出的云端文件路径（应用层用来看哪些设备开了图案解锁） */
+  paths: string[]
 }
 
 export class NotInitializedError extends Error {
@@ -170,7 +172,7 @@ export class SyncEngine {
     }
     st.lastSync = this.now()
     await host.saveSyncState(remote.id, st)
-    return { downloaded: fetched.length, uploaded, problems, skippedItems }
+    return { downloaded: fetched.length, uploaded, problems, skippedItems, paths: listing.map((f) => f.path) }
   }
 
   /**

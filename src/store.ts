@@ -11,7 +11,7 @@
 import { reactive, shallowRef } from 'vue'
 import { App as CapApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
-import { utf8 } from './core/bytes'
+import { fromUtf8, utf8 } from './core/bytes'
 import {
   KEY_INFO, VaultCipher, WrongPassphraseError, changePassphrase as rewrap, createKeys, encryptJsonTo, parseKeyInfo, unwrapIdentity, type KeyBundle,
 } from './core/crypto'
@@ -35,7 +35,12 @@ import { http } from './core/http'
 import type { ImportedItem } from './core/csv'
 import type { Rev } from './core/rev'
 import { files, wipeLocal } from './platform/files'
-import { bioEnroll, bioRemove, bioStatus, bioUnlock, type BioStatus } from './platform/vaultKey'
+import { bioEnroll, bioRemove, bioStatus, bioUnlock, openSecret, removeSealKey, sealAvailable, sealSecret, type BioStatus } from './platform/vaultKey'
+import { Preferences } from '@capacitor/preferences'
+import {
+  PATTERN_MESSAGES, PatternUnlockError, daysLeft, deviceIdOfShare, emptyPatternState, makeRecord, masterDue, parseRecord, patternCode, patternProblem,
+  prefetchShare, sealPattern, unlockByPattern, unlockSharePath, uploadShare, type PatternHost, type PatternState,
+} from './core/pattern'
 import { clearIfDue, copyText } from './platform/clipboard'
 import { setScreenshotBlocking } from './platform/privacy'
 import { defaultDeviceName, newDeviceId } from './platform/device'
@@ -76,7 +81,11 @@ export const app = reactive({
     problems: [] as SyncProblem[],
     /** GitHub Token 的过期时间（毫秒），0 表示不会过期或还不知道。快到期时首页提醒 */
     tokenExpires: 0,
+    /** 云端开了图案解锁的设备ID（同步设备列表里的“作废图案解锁”） */
+    patternDevices: [] as string[],
   },
+  /** 图案解锁（1.0.9 起）：on 开着；due 该输主密码了；daysLeft 还剩几天；available 这台设备能用（有安全芯片的插件） */
+  pattern: { on: false, due: false, daysLeft: 0, available: false },
   bio: { available: false, reason: 'web' as BioStatus['reason'] },
   /** 刚建立或加入保险库，首页提示开启指纹 */
   offerBio: false,
@@ -159,6 +168,7 @@ async function persistVault(): Promise<void> {
 
 async function persistConfig(): Promise<void> {
   await writeEncrypted('config', { backend: app.backend })
+  await resealPattern()
 }
 
 // ---------- 启动、解锁、上锁 ----------
@@ -170,6 +180,8 @@ async function persistConfig(): Promise<void> {
 export async function init(mode: 'main' | 'autofill' = 'main'): Promise<void> {
   await loadPrefs()
   app.bio = await bioStatus()
+  app.pattern.available = sealAvailable()
+  await refreshPattern()
   const id = await files.read('identity')
   app.phase = id && prefs.recipient ? 'locked' : 'setup'
   watch(() => prefs.blockScreenshots, (on) => void setScreenshotBlocking(on), { immediate: true })
@@ -195,6 +207,7 @@ async function openWith(k: KeyBundle): Promise<void> {
   }
   keys = k
   cipher = new VaultCipher(k)
+  shareFetch = null
   let v = emptyVault()
   let dirty = false
   const local = await readEncrypted<LocalVaultFile>('vault')
@@ -225,7 +238,10 @@ async function openWith(k: KeyBundle): Promise<void> {
 export async function unlockWithPassword(passphrase: string): Promise<void> {
   const wrapped = await files.read('identity')
   if (!wrapped) throw new Error('本机没有保险库')
-  await openWith(await unwrapIdentity(wrapped, passphrase))
+  const k = await unwrapIdentity(wrapped, passphrase)
+  // 输过主密码：图案解锁续期 30 天
+  await touchMaster()
+  await openWith(k)
 }
 
 export async function unlockWithBio(): Promise<void> {
@@ -255,6 +271,7 @@ export function lock(): void {
   cipher = null
   syncState = null
   engine = null
+  shareFetch = null
   vault.value = emptyVault()
   usedAt.value = {}
   stopIcons()
@@ -746,6 +763,7 @@ async function runSync(): Promise<boolean> {
   const backend = app.backend!
   const eng = engine!
   const seq = editSeq
+  const startedAt = Date.now()
   app.sync.running = true
   try {
     const remote = makeRemote(backend)
@@ -762,6 +780,7 @@ async function runSync(): Promise<boolean> {
     app.sync.error = ''
     app.sync.errorKind = ''
     app.sync.tokenExpires = remote.credentialExpiry ?? 0
+    await checkPatternShare(r.paths, startedAt)
     if (editSeq === seq && app.sync.pending) {
       app.sync.pending = false
       await persistVault()
@@ -825,6 +844,7 @@ function resetSyncStatus() {
   app.sync.error = ''
   app.sync.errorKind = ''
   app.sync.tokenExpires = 0
+  app.sync.patternDevices = []
 }
 
 /**
@@ -846,6 +866,11 @@ async function switchKeys(k: KeyBundle, backend: BackendConfig): Promise<void> {
     prefs.bioData = ''
     await savePrefs()
     await bioRemove()
+    // 图案里存的也是旧密钥；云端那段密钥在旧位置，顺手删掉（删不掉也没关系，旧密钥的数据它解不开新保险库）
+    if ((await readPatternState()).on) {
+      if (app.backend) await makeRemote(app.backend).remove(unlockSharePath(prefs.deviceId)).catch(() => {})
+      await disablePatternLocal('换了保险库密钥')
+    }
     await mergeFromDisk()
     const both = [keys.recipient, k.recipient]
     await files.write('vault', await encryptJsonTo(both, { format: FORMAT, vault: vault.value, dirty: true } satisfies LocalVaultFile))
@@ -904,7 +929,11 @@ export async function rejoin(passphrase: string): Promise<void> {
 
 export async function removeDevice(id: string): Promise<void> {
   if (!engine || !app.backend) return
-  await engine.removeDevice(makeRemote(app.backend), id)
+  const remote = makeRemote(app.backend)
+  await engine.removeDevice(remote, id)
+  // 它的图案解锁也一起作废
+  await remote.remove(unlockSharePath(id)).catch(() => {})
+  app.sync.patternDevices = app.sync.patternDevices.filter((d) => d !== id)
   app.sync.devices = Object.values(syncState?.devices ?? {})
 }
 
@@ -975,11 +1004,215 @@ export async function wipeDevice(): Promise<void> {
   lock()
   draftStash = null
   await bioRemove()
+  await removeSealKey()
+  await writePatternState(emptyPatternState())
+  await refreshPattern()
   await wipeLocal()
   await resetPrefs()
   app.backend = null
   app.sync.pending = false
   app.phase = 'setup'
+}
+
+// ---------- 图案解锁（规格 6.4，1.0.9 起） ----------
+
+/** 状态单独存一个键、每次现读：自动填充窗口和主界面是两个网页环境，计数不能被另一边内存里的旧值盖掉 */
+const PATTERN_KEY = 'jinkui.pattern.v1'
+
+async function readPatternState(): Promise<PatternState> {
+  try {
+    const raw = (await Preferences.get({ key: PATTERN_KEY })).value
+    if (raw) {
+      const v = JSON.parse(raw) as Partial<PatternState>
+      const d = emptyPatternState()
+      return {
+        on: typeof v.on === 'boolean' ? v.on : d.on,
+        fails: typeof v.fails === 'number' ? v.fails : d.fails,
+        masterAt: typeof v.masterAt === 'number' ? v.masterAt : d.masterAt,
+        enabledAt: typeof v.enabledAt === 'number' ? v.enabledAt : d.enabledAt,
+      }
+    }
+  } catch { /* 坏了就当没开 */ }
+  return emptyPatternState()
+}
+
+async function writePatternState(st: PatternState): Promise<void> {
+  await Preferences.set({ key: PATTERN_KEY, value: JSON.stringify(st) })
+}
+
+/** 刷新界面上的图案状态（锁屏出现、回到前台时） */
+export async function refreshPattern(): Promise<void> {
+  const st = await readPatternState()
+  const now = Date.now()
+  app.pattern.on = st.on && app.pattern.available
+  app.pattern.due = st.on && masterDue(st, now)
+  app.pattern.daysLeft = st.on ? daysLeft(st, now) : 0
+}
+
+async function touchMaster(): Promise<void> {
+  const st = await readPatternState()
+  if (!st.on) return
+  await writePatternState({ ...st, masterAt: Date.now() })
+  await refreshPattern()
+}
+
+/** 删掉本机的图案数据（作废、错满、损坏、关闭时）。不动云端 */
+async function disablePatternLocal(why: string): Promise<void> {
+  await files.remove('pattern')
+  await removeSealKey()
+  await writePatternState(emptyPatternState())
+  shareFetch = null
+  await refreshPattern()
+  diag(`图案解锁关闭（${why}）`)
+}
+
+async function readPatternRecord() {
+  const b = await files.read('pattern')
+  if (!b) return null
+  return parseRecord(await openSecret(fromUtf8(b)))
+}
+
+const patternHost = (): PatternHost => ({
+  deviceId: prefs.deviceId,
+  readState: readPatternState,
+  writeState: writePatternState,
+  readRecord: readPatternRecord,
+  remote: (b) => makeRemote(b as BackendConfig),
+  disable: async () => disablePatternLocal('画错太多、已作废或数据损坏'),
+  now: () => Date.now(),
+})
+
+/**
+ * 锁屏一出现就去取云端密钥，画完图案时不用再等网络；画错后再试也用它。
+ * 最多留 1 分钟：放久了，在别的设备上作废之后，这台设备内存里还留着旧的密钥。
+ */
+let shareFetch: Promise<string> | null = null
+let shareFetchAt = 0
+const SHARE_TTL_MS = 60_000
+
+function freshShare(): Promise<string> | null {
+  if (shareFetch && Date.now() - shareFetchAt > SHARE_TTL_MS) shareFetch = null
+  return shareFetch
+}
+
+/** 锁屏调用：图案能不能用。不能用时返回原因（已作废、连不上云端…） */
+export async function preparePattern(): Promise<string | null> {
+  await refreshPattern()
+  if (!app.pattern.on) return PATTERN_MESSAGES.off
+  if (app.pattern.due) return PATTERN_MESSAGES.expired
+  if (!freshShare()) {
+    const p = prefetchShare(patternHost())
+    shareFetch = p
+    shareFetchAt = Date.now()
+    // 连不上云端的结果不留着：下次再试
+    p.catch((e) => {
+      if (shareFetch === p && (e as PatternUnlockError).reason === 'offline') shareFetch = null
+    })
+  }
+  try {
+    await shareFetch
+    return null
+  } catch (e) {
+    await refreshPattern()
+    if (e instanceof PatternUnlockError) diag(`图案解锁不可用（${e.reason}）`)
+    return (e as Error).message
+  }
+}
+
+/** 画图案解锁。错误是 PatternUnlockError（reason: wrong 时还能再试） */
+export async function unlockWithPattern(seq: readonly number[]): Promise<void> {
+  if (!freshShare()) await preparePattern()
+  let secret: string
+  try {
+    secret = await (freshShare() ?? prefetchShare(patternHost()))
+  } catch (e) {
+    shareFetch = null
+    await refreshPattern()
+    throw e
+  }
+  let identity: string
+  try {
+    identity = await unlockByPattern(patternHost(), seq, secret)
+  } catch (e) {
+    await refreshPattern()
+    if (e instanceof PatternUnlockError) diag(`图案解锁没有成功（${e.reason}${e.reason === 'wrong' ? `，还剩 ${e.remaining} 次` : ''}）`)
+    throw e
+  }
+  shareFetch = null
+  const wrapped = await files.read('identity')
+  if (!wrapped) throw new Error('本机没有保险库')
+  await openWith({ identity, recipient: await identityToRecipient(identity), wrapped })
+  diag('用图案解锁')
+}
+
+/**
+ * 开启（或重新设置）图案解锁。要先输主密码（顺便续期 30 天），要已经开启同步。
+ * 顺序：先把新的云端密钥传上去，再写本机数据；中途失败只会在云端留一个没用的文件。
+ */
+export async function enablePattern(passphrase: string, seq: readonly number[]): Promise<void> {
+  if (!keys) throw new Error('已上锁')
+  if (!app.backend) throw new Error('图案解锁要先开启同步：解锁时要从云端取一段密钥，丢了设备可以在别的设备上作废')
+  const problem = patternProblem(seq)
+  if (problem) throw new Error(problem)
+  if (!(await verifyPassphrase(passphrase))) throw new WrongPassphraseError()
+  const backend = app.backend
+  const secret = await uploadShare(makeRemote(backend), prefs.deviceId)
+  const inner = await sealPattern(keys.identity, patternCode(seq), secret)
+  const sealed = await sealSecret(JSON.stringify(makeRecord(prefs.deviceId, inner, backend)))
+  await files.write('pattern', utf8(sealed))
+  const now = Date.now()
+  await writePatternState({ on: true, fails: 0, masterAt: now, enabledAt: now })
+  shareFetch = null
+  if (!app.sync.patternDevices.includes(prefs.deviceId)) app.sync.patternDevices = [...app.sync.patternDevices, prefs.deviceId]
+  await refreshPattern()
+  diag('开启图案解锁')
+}
+
+/** 关闭本机的图案解锁：本机数据删掉，云端那段密钥也删掉（删不掉的话，没有本机数据它也没用） */
+export async function disablePattern(): Promise<void> {
+  if (app.backend) await makeRemote(app.backend).remove(unlockSharePath(prefs.deviceId)).catch(() => {})
+  app.sync.patternDevices = app.sync.patternDevices.filter((d) => d !== prefs.deviceId)
+  await disablePatternLocal('用户关闭')
+}
+
+/**
+ * 作废另一台设备的图案解锁（那台设备丢了）：删掉云端它的那段密钥，要输主密码确认。
+ * 和“移除设备”一样，是“每台设备只写自己的文件”的例外。
+ */
+export async function revokePattern(deviceId: string, passphrase: string): Promise<void> {
+  if (!app.backend) throw new Error('还没有开启同步')
+  if (!(await verifyPassphrase(passphrase))) throw new WrongPassphraseError()
+  if (deviceId === prefs.deviceId) return disablePattern()
+  await makeRemote(app.backend).remove(unlockSharePath(deviceId))
+  app.sync.patternDevices = app.sync.patternDevices.filter((d) => d !== deviceId)
+  diag('作废了另一台设备的图案解锁')
+}
+
+/** 同步配置变了（换 Token、换位置）：本机图案数据里的配置副本跟着换；停止同步就关掉图案解锁 */
+async function resealPattern(): Promise<void> {
+  if (!(await readPatternState()).on) return
+  if (!app.backend) return disablePatternLocal('停止了同步')
+  try {
+    const rec = await readPatternRecord()
+    if (!rec) return disablePatternLocal('本机数据没了')
+    if (canonicalJson(rec.backend) === canonicalJson(app.backend)) return
+    await files.write('pattern', utf8(await sealSecret(JSON.stringify({ ...rec, backend: app.backend }))))
+    shareFetch = null
+  } catch {
+    await disablePatternLocal('安全芯片里的钥匙不可用')
+  }
+}
+
+/** 同步后：看哪些设备开了图案解锁；本机的那段密钥在云端没了（被别的设备作废、或换了位置），本机也关掉 */
+async function checkPatternShare(paths: string[], startedAt: number): Promise<void> {
+  app.sync.patternDevices = paths.map(deviceIdOfShare).filter((d): d is string => !!d)
+  const st = await readPatternState()
+  // 这一轮在开启之前就开始了：它列出的文件里还没有刚传上去的密钥
+  if (!st.on || st.enabledAt >= startedAt) return
+  if (!paths.includes(unlockSharePath(prefs.deviceId))) {
+    await disablePatternLocal('云端的密钥没了')
+    toast('图案解锁已在别的设备上作废')
+  }
 }
 
 // ---------- 导出 ----------

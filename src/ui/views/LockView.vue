@@ -1,9 +1,14 @@
 <script setup lang="ts">
-/** 锁屏：主密码或指纹解锁。打开时如果开了指纹，自动弹出指纹框 */
+/**
+ * 锁屏：主密码、指纹或图案解锁。打开时如果开了指纹，自动弹出指纹框；
+ * 开了图案（1.0.9 起）就先显示图案，同时去云端取解锁要用的那段密钥。
+ */
 import Logo from '../components/Logo.vue'
 import { nextTick, onMounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
-import { app, setBioPrompting, unlockWithBio, unlockWithPassword, wipeDevice } from '../../store'
+import PatternPad from '../components/PatternPad.vue'
+import { app, preparePattern, setBioPrompting, unlockWithBio, unlockWithPassword, unlockWithPattern, wipeDevice } from '../../store'
+import { PATTERN_MESSAGES, PatternUnlockError } from '../../core/pattern'
 import { diag } from '../../diag'
 import { prefs } from '../../prefs'
 import { FormatTooNewError } from '../../core/vault'
@@ -13,6 +18,69 @@ const pass = ref('')
 const busy = ref(false)
 const error = ref('')
 const input = ref<HTMLInputElement | null>(null)
+
+/** 显示图案还是主密码 */
+const mode = ref<'pattern' | 'password'>(app.pattern.on && !app.pattern.due ? 'pattern' : 'password')
+/** 图案上方的说明：正在连接、画图案、画错了还剩几次 */
+const patternHint = ref('')
+const padStatus = ref<'' | 'error' | 'busy'>('')
+const padReset = ref(0)
+/** 图案暂时用不了的原因（连不上云端、到期、已作废），显示在主密码上面 */
+const patternNote = ref(app.pattern.on && app.pattern.due ? PATTERN_MESSAGES.expired : '')
+
+async function prepare() {
+  if (!app.pattern.on || app.pattern.due) return
+  patternHint.value = '正在连接云端…'
+  const why = await preparePattern()
+  if (why) {
+    patternNote.value = why
+    mode.value = 'password'
+    await nextTick()
+    input.value?.focus()
+  } else {
+    patternNote.value = ''
+    patternHint.value = '画图案解锁'
+  }
+}
+
+async function withPattern(seq: number[]) {
+  if (busy.value) return
+  busy.value = true
+  error.value = ''
+  padStatus.value = 'busy'
+  patternHint.value = '正在解锁…'
+  await frame()
+  try {
+    await unlockWithPattern(seq)
+  } catch (e) {
+    if (e instanceof PatternUnlockError && e.reason === 'wrong') {
+      padStatus.value = 'error'
+      patternHint.value = e.message
+      setTimeout(() => {
+        padStatus.value = ''
+        padReset.value++
+      }, 700)
+    } else {
+      padStatus.value = ''
+      patternNote.value = (e as Error).message
+      mode.value = 'password'
+      await nextTick()
+      input.value?.focus()
+    }
+  } finally {
+    busy.value = false
+  }
+}
+
+function usePassword() {
+  mode.value = 'password'
+  void nextTick(() => input.value?.focus())
+}
+
+function usePattern() {
+  mode.value = 'pattern'
+  void prepare()
+}
 
 const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)))
 
@@ -73,10 +141,14 @@ async function forgot() {
 
 onMounted(() => {
   if (prefs.bioData && app.bio.available) autoBio()
-  else input.value?.focus()
+  else if (mode.value === 'password') input.value?.focus()
+  if (mode.value === 'pattern') void prepare()
 })
-// 锁屏状态下回到前台：再弹一次（锁屏可能是在后台出现的）
-watch(() => app.foregroundTick, autoBio)
+// 锁屏状态下回到前台：再弹一次指纹（锁屏可能是在后台出现的）；图案重新去取云端密钥（可能刚连上网）
+watch(() => app.foregroundTick, () => {
+  autoBio()
+  if (mode.value === 'pattern' && !busy.value) void prepare()
+})
 </script>
 
 <template>
@@ -86,7 +158,13 @@ watch(() => app.foregroundTick, autoBio)
       <h1>金匮</h1>
       <p class="muted">已上锁</p>
     </div>
-    <form class="form" @submit.prevent="withPassword">
+    <div v-if="mode === 'pattern'" class="pattern">
+      <p class="hint" :class="{ err: padStatus === 'error' }">{{ patternHint }}</p>
+      <PatternPad :status="padStatus" :reset-key="padReset" :disabled="busy" @done="withPattern" />
+      <button class="text-btn alt" :disabled="busy" @click="usePassword">用主密码</button>
+    </div>
+    <form v-else class="form" @submit.prevent="withPassword">
+      <p v-if="patternNote" class="note-box">{{ patternNote }}</p>
       <input ref="input" v-model="pass" class="field mono" type="password" placeholder="主密码" aria-label="主密码"
         autocomplete="current-password" autocapitalize="off" spellcheck="false" :disabled="busy" />
       <button class="solid-btn block" type="submit" :disabled="busy || !pass">
@@ -94,6 +172,9 @@ watch(() => app.foregroundTick, autoBio)
       </button>
     </form>
     <p v-if="error" class="note-box err">{{ error }}</p>
+    <button v-if="mode === 'password' && app.pattern.on && !app.pattern.due" class="text-btn alt" :disabled="busy" @click="usePattern">
+      <Icon name="pattern" /> 用图案
+    </button>
     <button v-if="prefs.bioData && app.bio.available" class="bio" :disabled="busy" @click="withBio">
       <Icon name="fingerprint" />
       <span>指纹解锁</span>
@@ -112,4 +193,9 @@ watch(() => app.foregroundTick, autoBio)
 .bio:active { background: var(--line); }
 .bio svg { width: 44px; height: 44px; }
 .forgot { margin: auto auto 16px; color: var(--muted); font-weight: 600; }
+.pattern { display: flex; flex-direction: column; align-items: center; margin-top: 28px; }
+.pattern .hint { min-height: 1.6em; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+.pattern .hint.err { color: var(--danger); }
+.alt { display: inline-flex; align-items: center; gap: 6px; margin: 14px auto 0; color: var(--accent); font-weight: 600; }
+.alt svg { width: 20px; height: 20px; }
 </style>

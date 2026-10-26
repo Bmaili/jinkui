@@ -167,6 +167,7 @@ export const DATA_README_TEXT = `# 金匮 保险库
 
 - \`keys/identity.age\`：保险库密钥，用你的**主密码**加密。
 - \`keys/info.json\`：保险库公钥。
+- \`keys/unlock/<设备ID>.json\`：这台设备“图案解锁”要用的一段随机密钥，单独没用；删掉它就作废了那台设备的图案解锁。
 - \`devices/<设备ID>.age\`：每台设备各自上传的完整保险库，用保险库密钥加密（[age](https://age-encryption.org) 格式）。
   各设备的文件合并后就是全部数据；任意一个最新的文件通常已经包含全部条目。
 

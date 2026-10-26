@@ -21,6 +21,10 @@ interface VaultKeyPlugin {
   /** 弹指纹框，成功后解密。错误码：CANCELLED、INVALIDATED（密钥失效）、LOCKOUT（试错太多）、FAILED */
   unlock(o: { data: string; title: string; cancel: string }): Promise<{ secret: string }>
   remove(): Promise<void>
+  /** 图案解锁的外层（1.0.9 起）：另一把不需要指纹的 Keystore 密钥加密，密文离开本机就解不开 */
+  seal?(o: { secret: string }): Promise<{ data: string }>
+  open?(o: { data: string }): Promise<{ secret: string }>
+  removeSeal?(): Promise<void>
 }
 
 const Native = registerPlugin<VaultKeyPlugin>('VaultKey')
@@ -84,4 +88,37 @@ export const BIO_REASON: Record<BioStatus['reason'], string> = {
   'no-hardware': '这台手机没有可用的指纹识别（需要“强”生物识别，部分手机的人脸识别不算）',
   unavailable: '指纹识别暂时不可用',
   web: '只在手机上可用',
+}
+
+// ---------- 图案解锁的外层（安全芯片里的另一把钥匙，不需要指纹） ----------
+
+/** 能不能用安全芯片加密（浏览器里没有；端到端测试的假插件里有 seal 就算有） */
+export function sealAvailable(): boolean {
+  const p = impl()
+  return typeof p?.seal === 'function'
+}
+
+export async function sealSecret(secret: string): Promise<string> {
+  const p = impl()
+  if (!p?.seal) throw new BioError('UNAVAILABLE', '只在手机上可用')
+  try {
+    return (await p.seal({ secret })).data
+  } catch (e) {
+    throw wrap(e)
+  }
+}
+
+export async function openSecret(data: string): Promise<string> {
+  const p = impl()
+  if (!p?.open) throw new BioError('UNAVAILABLE', '只在手机上可用')
+  try {
+    return (await p.open({ data })).secret
+  } catch (e) {
+    const err = e as { code?: string; message?: string }
+    throw new BioError(err.code ?? 'FAILED', err.message ?? '安全芯片里的密钥不可用')
+  }
+}
+
+export async function removeSealKey(): Promise<void> {
+  await impl()?.removeSeal?.().catch(() => {})
 }

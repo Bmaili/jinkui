@@ -6,7 +6,8 @@ import Icon from '../components/Icon.vue'
 import BackendForm from '../components/BackendForm.vue'
 import SyncBanner from '../components/SyncBanner.vue'
 import {
-  OtherVaultError, app, backendTitle, copyPlain, createJoinCode, joinOtherVault, removeDevice, setBackend, syncNow, toast, vault, type BackendConfig,
+  OtherVaultError, app, backendTitle, copyPlain, createJoinCode, joinOtherVault, removeDevice, revokePattern, setBackend, syncNow, toast, vault,
+  type BackendConfig,
 } from '../../store'
 import { liveItems } from '../../core/vault'
 import { prefs } from '../../prefs'
@@ -106,6 +107,30 @@ async function sync() {
   toast(ok ? '已同步' : '同步失败')
 }
 
+const hasPattern = (id: string) => app.sync.patternDevices.includes(id)
+
+/** 那台设备丢了：删掉云端它的图案解锁密钥（要主密码） */
+async function revoke(id: string, name: string) {
+  const p = await promptText({
+    title: `作废“${name}”的图案解锁？`,
+    message: '删掉云端它解锁要用的那段密钥：之后那台设备只能用主密码解锁，捡到的人猜中图案也打不开。\n适合设备丢了的时候。请输入主密码确认。',
+    ok: '作废',
+    danger: true,
+    input: { password: true, placeholder: '主密码' },
+  })
+  if (!p) return
+  busy.value = '正在作废…'
+  await frame()
+  try {
+    await revokePattern(id, p)
+    toast('已作废，那台设备只能用主密码解锁了')
+  } catch (e) {
+    toast((e as Error).message)
+  } finally {
+    busy.value = ''
+  }
+}
+
 async function remove(id: string, name: string) {
   const ok = await ask({
     title: `移除“${name}”？`,
@@ -166,14 +191,16 @@ async function remove(id: string, name: string) {
         <div class="group">
           <div class="row">
             <Icon name="device" />
-            <span class="grow">{{ prefs.deviceName }}（本机）<span class="sub">{{ self ? `上次上传 ${timeAgo(self.written)}` : '还没有上传' }}</span></span>
+            <span class="grow">{{ prefs.deviceName }}（本机）<span class="sub">{{ self ? `上次上传 ${timeAgo(self.written)}` : '还没有上传' }}{{ hasPattern(prefs.deviceId) ? ' · 图案解锁' : '' }}</span></span>
           </div>
           <div v-for="d in others" :key="d.id" class="row">
             <Icon name="device" />
-            <span class="grow">{{ d.name }}<span class="sub">上次上传 {{ timeAgo(d.written) }}</span></span>
+            <span class="grow">{{ d.name }}<span class="sub">上次上传 {{ timeAgo(d.written) }}{{ hasPattern(d.id) ? ' · 图案解锁' : '' }}</span></span>
+            <button v-if="hasPattern(d.id)" class="text-btn danger" :disabled="!!busy" @click="revoke(d.id, d.name)">作废图案</button>
             <button class="text-btn danger" :disabled="!!busy" @click="remove(d.id, d.name)">移除</button>
           </div>
         </div>
+        <p class="muted small hint">设备丢了：先点“作废图案”（开了图案解锁的才有），再“移除”；GitHub 的话再去换一个 Token。</p>
         <div class="group" style="margin-top: 12px">
           <button class="row" :disabled="!!busy" @click="makeCode">
             <Icon name="key" />

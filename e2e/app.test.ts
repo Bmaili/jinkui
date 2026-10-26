@@ -955,6 +955,144 @@ describe('金匮 1.0.8：条目图标、自动填充按目录筛选', () => {
     await shot(p, 'autofill-folders-dark')
     await p.close()
   })
+
+  // ---------- 1.0.9：图案解锁 ----------
+
+  /** 在图案上按顺序拖过这些点（0–8 按行编号） */
+  async function drawPattern(p: Page, seq: number[], pad = '.pad') {
+    const box = (await p.locator(pad).boundingBox())!
+    const pt = (i: number) => ({ x: box.x + (box.width * ((i % 3) * 100 + 50)) / 300, y: box.y + (box.height * (Math.floor(i / 3) * 100 + 50)) / 300 })
+    await p.mouse.move(pt(seq[0]).x, pt(seq[0]).y)
+    await p.mouse.down()
+    for (const i of seq.slice(1)) await p.mouse.move(pt(i).x, pt(i).y, { steps: 5 })
+    await p.mouse.up()
+  }
+  const L = [0, 3, 6, 7, 8]
+  const WRONG = [0, 1, 2, 5, 8]
+
+  /** 没有指纹的平板：安全芯片的假实现（seal / open 只是包一层 base64） */
+  async function tabletPage(base: Page): Promise<Page> {
+    const p = await base.context().newPage()
+    p.on('pageerror', (e) => console.error('页面错误', e.message))
+    await p.addInitScript(() => {
+      const w = window as unknown as Record<string, unknown>
+      const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
+      const unb64 = (s: string) => new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)))
+      w.__vaultKeyMock = {
+        status: async () => ({ available: false, reason: 'no-hardware' }),
+        enroll: async () => { throw new Error('没有指纹') },
+        unlock: async () => { throw new Error('没有指纹') },
+        remove: async () => {},
+        seal: async (o: { secret: string }) => ({ data: 'sealed:' + b64(o.secret) }),
+        open: async (o: { data: string }) => ({ secret: unb64(o.data.slice(7)) }),
+        removeSeal: async () => {},
+      }
+    })
+    return p
+  }
+
+  async function lockNow(p: Page) {
+    await p.goto(`${site.url}#/settings`)
+    await p.click('text=立即上锁')
+    await p.waitForSelector('text=已上锁')
+  }
+
+  it('图案解锁：设置、画错计数、画对解开；另一台设备作废后只能用主密码', async () => {
+    const t = await tabletPage(a)
+    await t.goto(`${site.url}#/settings`)
+    await t.waitForSelector('text=已上锁')
+    await t.fill('[aria-label="主密码"]', PASS)
+    await t.click('button:has-text("解锁")')
+    await t.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+    await t.waitForSelector('text=图案解锁')
+    await t.click('[aria-label="图案解锁"]')
+    await t.waitForSelector('.sheet .pad')
+    await drawPattern(t, [0, 1, 2], '.sheet .pad')
+    await t.waitForSelector('.sheet >> text=至少连 4 个点，请重画')
+    await t.waitForTimeout(800)
+    await drawPattern(t, L, '.sheet .pad')
+    await t.waitForSelector('.sheet >> text=再画一遍确认')
+    await drawPattern(t, L, '.sheet .pad')
+    await t.waitForSelector('.sheet [aria-label="主密码"]')
+    await t.fill('.sheet [aria-label="主密码"]', PASS)
+    await shot(t, 'pattern-setup')
+    await t.click('.sheet .solid-btn')
+    await t.waitForSelector('text=已开启图案解锁', { timeout: 30000 })
+    expect([...gh.files.keys()].filter((x) => x.startsWith('keys/unlock/'))).toHaveLength(1)
+    await t.waitForSelector('text=天内要输一次主密码')
+    await shot(t, 'settings-pattern')
+
+    // 锁屏先显示图案
+    await lockNow(t)
+    await t.waitForSelector('.lock .hint:text-is("画图案解锁")', { timeout: 30000 })
+    await shot(t, 'lock-pattern')
+    await drawPattern(t, WRONG)
+    await t.waitForSelector('text=图案不对，还可以再试 4 次', { timeout: 30000 })
+    await t.waitForTimeout(800)
+    await drawPattern(t, L)
+    await t.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+
+    // 暗色
+    await t.emulateMedia({ colorScheme: 'dark' })
+    await lockNow(t)
+    await t.waitForSelector('.lock .hint:text-is("画图案解锁")', { timeout: 30000 })
+    await shot(t, 'lock-pattern-dark')
+    await drawPattern(t, L)
+    await t.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+    await t.emulateMedia({ colorScheme: 'light' })
+
+    // 自动填充窗口里也能画图案
+    const af = await t.context().newPage()
+    await af.addInitScript(() => {
+      const w = window as unknown as Record<string, unknown>
+      w.__autofillMock = {
+        status: async () => ({ supported: true, enabled: true }),
+        openSettings: async () => ({ opened: false }),
+        disable: async () => {},
+        getRequest: async () => ({ mode: 'fill', packageName: 'com.android.chrome', appLabel: 'Chrome', webDomain: 'icbc.com.cn', hasUsername: true, hasPassword: true }),
+        fill: async () => {},
+        close: async () => {},
+      }
+      const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
+      const unb64 = (s: string) => new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)))
+      w.__vaultKeyMock = {
+        status: async () => ({ available: false, reason: 'no-hardware' }),
+        enroll: async () => { throw new Error('没有指纹') },
+        unlock: async () => { throw new Error('没有指纹') },
+        remove: async () => {},
+        seal: async (o: { secret: string }) => ({ data: 'sealed:' + b64(o.secret) }),
+        open: async (o: { data: string }) => ({ secret: unb64(o.data.slice(7)) }),
+        removeSeal: async () => {},
+      }
+    })
+    await af.goto(site.url)
+    await af.waitForSelector('.af .lock .hint:text-is("画图案解锁")', { timeout: 30000 })
+    await drawPattern(af, L)
+    await af.waitForSelector('.dirs', { timeout: 30000 })
+    await af.close()
+
+    // B（另一台设备）同步后看到 A 开了图案解锁，作废它
+    await b.goto(`${site.url}#/settings/sync`)
+    await b.click('text=立即同步')
+    await b.waitForSelector('text=作废图案', { timeout: 30000 })
+    await shot(b, 'sync-pattern-dark')
+    await b.click('.row .text-btn:has-text("作废图案")')
+    await b.fill('.dlg input', PASS)
+    await b.click('.dlg .btns >> text=作废')
+    await b.waitForSelector('text=已作废', { timeout: 30000 })
+    expect([...gh.files.keys()].filter((x) => x.startsWith('keys/unlock/'))).toHaveLength(0)
+
+    // A 再上锁：图案不能用了，只能用主密码；本机的图案数据也删了
+    await lockNow(t)
+    await t.waitForSelector('text=图案解锁已在别的设备上作废', { timeout: 30000 })
+    await shot(t, 'lock-pattern-revoked')
+    await t.fill('[aria-label="主密码"]', PASS)
+    await t.click('button:has-text("解锁")')
+    await t.waitForSelector('.shell[data-phase="unlocked"]', { timeout: 30000 })
+    await t.goto(`${site.url}#/settings`)
+    await t.waitForSelector('text=没有指纹的平板用')
+    await t.close()
+  })
 })
 
 async function waitSyncedAfterEdit(page: Page) {

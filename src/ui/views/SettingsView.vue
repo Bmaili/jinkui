@@ -5,8 +5,9 @@ import { useRouter } from 'vue-router'
 import { autofill } from '../../platform/autofill'
 import Icon from '../components/Icon.vue'
 import Switch from '../components/Switch.vue'
+import PatternSetup from '../components/PatternSetup.vue'
 import {
-  app, backendTitle, disableBio, enableBio, expectExternal, importItems, lock, renameDevice, setSiteIcons, toast, vault, verifyPassphrase, wipeDevice,
+  app, backendTitle, disableBio, disablePattern, enableBio, expectExternal, importItems, lock, refreshPattern, renameDevice, setSiteIcons, toast, vault, verifyPassphrase, wipeDevice,
 } from '../../store'
 import { prefs } from '../../prefs'
 import { BIO_REASON } from '../../platform/vaultKey'
@@ -27,7 +28,10 @@ async function refreshAutofill() {
   autofillSub.value = s.enabled ? '已开启' : s.supported ? '未开启：点这里看怎么设置' : '只在安卓 8 以上的手机上可用'
 }
 onMounted(refreshAutofill)
-onActivated(refreshAutofill)
+onActivated(() => {
+  void refreshAutofill()
+  void refreshPattern()
+})
 
 const LOCK_OPTS = [[0, '立即'], [30, '30 秒'], [60, '1 分钟'], [300, '5 分钟'], [900, '15 分钟'], [3600, '1 小时'], [14400, '4 小时']] as const
 /** 1 小时起算“保持解锁”：首页一直显示提醒 */
@@ -58,6 +62,29 @@ async function toggleBio(on: boolean) {
   } catch (e) {
     if ((e as { code?: string }).code !== 'CANCELLED') toast((e as Error).message)
   }
+}
+
+const patternOpen = ref(false)
+const patternSub = computed(() => {
+  if (!app.pattern.available) return '只在手机、平板上可用'
+  if (app.pattern.on) return app.pattern.due ? '该输一次主密码了：下次解锁请用主密码' : `已开启 · ${app.pattern.daysLeft} 天内要输一次主密码`
+  if (!app.backend) return '要先开启同步：解锁时要从云端取一段密钥'
+  return '没有指纹的平板用：画图案代替主密码，要联网'
+})
+const pattern = computed({
+  get: () => app.pattern.on,
+  set: (on: boolean) => void togglePattern(on),
+})
+async function togglePattern(on: boolean) {
+  if (on) {
+    if (!app.backend) return toast('图案解锁要先开启同步')
+    patternOpen.value = true
+    return
+  }
+  const ok = await ask({ title: '关闭图案解锁？', message: '本机的图案数据和云端的那段密钥都会删掉，以后要用主密码解锁。', ok: '关闭', danger: true })
+  if (!ok) return
+  await disablePattern()
+  toast('已关闭图案解锁')
 }
 
 /** 点一下换到下一个选项 */
@@ -203,6 +230,11 @@ async function wipe() {
           <span class="grow">指纹解锁<span class="sub">{{ app.bio.available ? '用系统安全芯片里的密钥解开保险库' : BIO_REASON[app.bio.reason] }}</span></span>
           <Switch v-model="bio" label="指纹解锁" :disabled="!app.bio.available && !prefs.bioData" />
         </div>
+        <div class="row">
+          <Icon name="pattern" />
+          <span class="grow">图案解锁<span class="sub">{{ patternSub }}</span></span>
+          <Switch v-model="pattern" label="图案解锁" :disabled="!app.pattern.available || (!app.backend && !app.pattern.on)" />
+        </div>
         <button class="row" @click="cycleLock">
           <Icon name="clock" />
           <span class="grow">自动上锁<span class="sub">{{ prefs.autoLockSec >= KEEP_UNLOCKED ? '保持解锁：离开这么久以内回来不用解锁（点按切换）' : prefs.autoLockSec ? '离开 app 多久后上锁（点按切换）' : '回到桌面或切到别的 app 就上锁（点按切换）' }}</span></span>
@@ -264,6 +296,7 @@ async function wipe() {
           <Icon name="right" />
         </button>
       </div>
+      <PatternSetup :open="patternOpen" @close="patternOpen = false" />
       <input ref="fileInput" type="file" accept=".csv,text/csv,text/comma-separated-values,text/plain" hidden @change="onCsv" />
 
       <div class="group-title">本机</div>
